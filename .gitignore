@@ -1,0 +1,78 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Runtime
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage
+coverage/
+*.lcov
+
+# Docker
+.dockerignore
+
+# Backup files
+*.bak
+*.backup
+*.tmp
+
+# Test artifacts
+/test-results/
+/coverage/
+
+# Build artifacts
+/dist/
+/build/
+
+# Local development
+/scripts/*.local
+/config/*.local
+
+# Monitoring and metrics
+/metrics/
+/monitoring/data/
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.csr
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache
+.cache/
+*.cache
