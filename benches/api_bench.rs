@@ -1,7 +1,7 @@
 //! API endpoint performance benchmarks
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use aiapiproxy::config::Settings;
+use aiapiproxy::config::settings::Settings;
 use aiapiproxy::handlers::create_router;
 use aiapiproxy::models::claude::*;
 use axum::{
@@ -73,17 +73,19 @@ fn bench_health_endpoint(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     
     c.bench_function("health_endpoint", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let request = Request::builder()
-                .uri("/health")
-                .body(Body::empty())
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            assert_eq!(response.status(), StatusCode::OK);
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let request = Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                assert_eq!(response.status(), StatusCode::OK);
+            })
         })
     });
 }
@@ -93,18 +95,20 @@ fn bench_readiness_endpoint(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     
     c.bench_function("readiness_endpoint", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let request = Request::builder()
-                .uri("/health/ready")
-                .body(Body::empty())
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            // Expect 503 in test environment because OpenAI connection will fail
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let request = Request::builder()
+                    .uri("/health/ready")
+                    .body(Body::empty())
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                // Expect 503 in test environment because OpenAI connection will fail
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            })
         })
     });
 }
@@ -114,17 +118,19 @@ fn bench_liveness_endpoint(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     
     c.bench_function("liveness_endpoint", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let request = Request::builder()
-                .uri("/health/live")
-                .body(Body::empty())
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            assert_eq!(response.status(), StatusCode::OK);
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let request = Request::builder()
+                    .uri("/health/live")
+                    .body(Body::empty())
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                assert_eq!(response.status(), StatusCode::OK);
+            })
         })
     });
 }
@@ -134,24 +140,26 @@ fn bench_messages_validation(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     
     c.bench_function("messages_validation", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let claude_request = create_simple_claude_request();
-            let request_body = serde_json::to_string(&claude_request).unwrap();
-            
-            let request = Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
-                .body(Body::from(request_body))
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            // Expect 502 because OpenAI request will fail, but validation should pass
-            assert!(response.status() == StatusCode::BAD_GATEWAY || response.status() == StatusCode::INTERNAL_SERVER_ERROR);
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let claude_request = create_simple_claude_request();
+                let request_body = serde_json::to_string(&claude_request).unwrap();
+                
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
+                    .body(Body::from(request_body))
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                // Expect 502 because OpenAI request will fail, but validation should pass
+                assert!(response.status() == StatusCode::BAD_GATEWAY || response.status() == StatusCode::INTERNAL_SERVER_ERROR);
+            })
         })
     });
 }
@@ -161,23 +169,25 @@ fn bench_auth_failure(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     
     c.bench_function("auth_failure", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let claude_request = create_simple_claude_request();
-            let request_body = serde_json::to_string(&claude_request).unwrap();
-            
-            let request = Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                // Intentionally not providing authentication header
-                .body(Body::from(request_body))
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let claude_request = create_simple_claude_request();
+                let request_body = serde_json::to_string(&claude_request).unwrap();
+                
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    // Intentionally not providing authentication header
+                    .body(Body::from(request_body))
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            })
         })
     });
 }
@@ -191,33 +201,35 @@ fn bench_request_sizes(c: &mut Criterion) {
         let content = "x".repeat(*size);
         
         group.bench_with_input(BenchmarkId::new("process_request", size), size, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                let settings = create_test_settings();
-                let app = create_router(settings).await.expect("Failed to create router");
-                
-                let claude_request = ClaudeRequest {
-                    model: "claude-3-sonnet".to_string(),
-                    max_tokens: 100,
-                    messages: vec![ClaudeMessage {
-                        role: "user".to_string(),
-                        content: ClaudeContent::Text(content.clone()),
-                    }],
-                    ..Default::default()
-                };
-                
-                let request_body = serde_json::to_string(&claude_request).unwrap();
-                
-                let request = Request::builder()
-                    .method("POST")
-                    .uri("/v1/messages")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
-                    .body(Body::from(request_body))
-                    .unwrap();
-                
-                let response = black_box(app.oneshot(request).await.unwrap());
-                // Validation should pass, but OpenAI request will fail
-                assert!(response.status() == StatusCode::BAD_GATEWAY || response.status() == StatusCode::INTERNAL_SERVER_ERROR);
+            b.iter(|| {
+                rt.block_on(async {
+                    let settings = create_test_settings();
+                    let app = create_router(settings).await.expect("Failed to create router");
+                    
+                    let claude_request = ClaudeRequest {
+                        model: "claude-3-sonnet".to_string(),
+                        max_tokens: 100,
+                        messages: vec![ClaudeMessage {
+                            role: "user".to_string(),
+                            content: ClaudeContent::Text(content.clone()),
+                        }],
+                        ..Default::default()
+                    };
+                    
+                    let request_body = serde_json::to_string(&claude_request).unwrap();
+                    
+                    let request = Request::builder()
+                        .method("POST")
+                        .uri("/v1/messages")
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
+                        .body(Body::from(request_body))
+                        .unwrap();
+                    
+                    let response = black_box(app.oneshot(request).await.unwrap());
+                    // Validation should pass, but OpenAI request will fail
+                    assert!(response.status() == StatusCode::BAD_GATEWAY || response.status() == StatusCode::INTERNAL_SERVER_ERROR);
+                })
             })
         });
     }
@@ -232,29 +244,31 @@ fn bench_concurrent_requests(c: &mut Criterion) {
     
     for concurrency in [1, 5, 10].iter() {
         group.bench_with_input(BenchmarkId::new("health_check", concurrency), concurrency, |b, &concurrency| {
-            b.to_async(&rt).iter(|| async move {
-                let settings = create_test_settings();
-                let app = create_router(settings).await.expect("Failed to create router");
-                
-                let mut handles = vec![];
-                
-                for _ in 0..concurrency {
-                    let app_clone = app.clone();
-                    let handle = tokio::spawn(async move {
-                        let request = Request::builder()
-                            .uri("/health")
-                            .body(Body::empty())
-                            .unwrap();
-                        
-                        app_clone.oneshot(request).await.unwrap()
-                    });
-                    handles.push(handle);
-                }
-                
-                for handle in handles {
-                    let response = black_box(handle.await.unwrap());
-                    assert_eq!(response.status(), StatusCode::OK);
-                }
+            b.iter(|| {
+                rt.block_on(async move {
+                    let settings = create_test_settings();
+                    let app = create_router(settings).await.expect("Failed to create router");
+                    
+                    let mut handles = vec![];
+                    
+                    for _ in 0..concurrency {
+                        let app_clone = app.clone();
+                        let handle = tokio::spawn(async move {
+                            let request = Request::builder()
+                                .uri("/health")
+                                .body(Body::empty())
+                                .unwrap();
+                            
+                            app_clone.oneshot(request).await.unwrap()
+                        });
+                        handles.push(handle);
+                    }
+                    
+                    for handle in handles {
+                        let response = black_box(handle.await.unwrap());
+                        assert_eq!(response.status(), StatusCode::OK);
+                    }
+                })
             })
         });
     }
@@ -271,42 +285,46 @@ fn bench_json_processing(c: &mut Criterion) {
     let complex_request = create_complex_claude_request();
     
     group.bench_function("simple_request_json", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let request_body = black_box(serde_json::to_string(&simple_request).unwrap());
-            
-            let request = Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
-                .body(Body::from(request_body))
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            assert!(response.status().is_client_error() || response.status().is_server_error());
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let request_body = black_box(serde_json::to_string(&simple_request).unwrap());
+                
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
+                    .body(Body::from(request_body))
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                assert!(response.status().is_client_error() || response.status().is_server_error());
+            })
         })
     });
     
     group.bench_function("complex_request_json", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let request_body = black_box(serde_json::to_string(&complex_request).unwrap());
-            
-            let request = Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
-                .body(Body::from(request_body))
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            assert!(response.status().is_client_error() || response.status().is_server_error());
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let request_body = black_box(serde_json::to_string(&complex_request).unwrap());
+                
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
+                    .body(Body::from(request_body))
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                assert!(response.status().is_client_error() || response.status().is_server_error());
+            })
         })
     });
     
@@ -320,55 +338,61 @@ fn bench_error_handling(c: &mut Criterion) {
     
     // Test performance of various error scenario handling
     group.bench_function("missing_auth", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let request = Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"model":"claude-3-sonnet","max_tokens":100,"messages":[{"role":"user","content":"test"}]}"#))
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"claude-3-sonnet","max_tokens":100,"messages":[{"role":"user","content":"test"}]}"#))
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            })
         })
     });
     
     group.bench_function("invalid_json", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let request = Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
-                .body(Body::from(r#"{"model":"claude-3-sonnet","max_tokens":}"#)) // Invalid JSON
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
+                    .body(Body::from(r#"{"model":"claude-3-sonnet","max_tokens":}"#)) // Invalid JSON
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            })
         })
     });
     
     group.bench_function("validation_error", |b| {
-        b.to_async(&rt).iter(|| async {
-            let settings = create_test_settings();
-            let app = create_router(settings).await.expect("Failed to create router");
-            
-            let request = Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
-                .body(Body::from(r#"{"model":"claude-3-sonnet","max_tokens":0,"messages":[]}"#)) // Validation error
-                .unwrap();
-            
-            let response = black_box(app.oneshot(request).await.unwrap());
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        b.iter(|| {
+            rt.block_on(async {
+                let settings = create_test_settings();
+                let app = create_router(settings).await.expect("Failed to create router");
+                
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890")
+                    .body(Body::from(r#"{"model":"claude-3-sonnet","max_tokens":0,"messages":[]}"#)) // Validation error
+                    .unwrap();
+                
+                let response = black_box(app.oneshot(request).await.unwrap());
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            })
         })
     });
     
@@ -390,26 +414,28 @@ fn bench_routing(c: &mut Criterion) {
     
     for (path, method) in endpoints {
         group.bench_function(&format!("{}_{}", method.to_lowercase(), path.replace('/', "_")), |b| {
-            b.to_async(&rt).iter(|| async {
-                let settings = create_test_settings();
-                let app = create_router(settings).await.expect("Failed to create router");
-                
-                let mut request_builder = Request::builder().method(method).uri(path);
-                
-                let body = if method == "POST" {
-                    request_builder = request_builder
-                        .header("content-type", "application/json")
-                        .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890");
-                    Body::from(r#"{"model":"claude-3-sonnet","max_tokens":100,"messages":[{"role":"user","content":"test"}]}"#)
-                } else {
-                    Body::empty()
-                };
-                
-                let request = request_builder.body(body).unwrap();
-                let response = black_box(app.oneshot(request).await.unwrap());
-                
-                // Verify response status codes are within reasonable range
-                assert!(response.status().as_u16() >= 200 && response.status().as_u16() < 600);
+            b.iter(|| {
+                rt.block_on(async {
+                    let settings = create_test_settings();
+                    let app = create_router(settings).await.expect("Failed to create router");
+                    
+                    let mut request_builder = Request::builder().method(method).uri(path);
+                    
+                    let body = if method == "POST" {
+                        request_builder = request_builder
+                            .header("content-type", "application/json")
+                            .header("authorization", "Bearer sk-ant-api03-test123456789012345678901234567890");
+                        Body::from(r#"{"model":"claude-3-sonnet","max_tokens":100,"messages":[{"role":"user","content":"test"}]}"#)
+                    } else {
+                        Body::empty()
+                    };
+                    
+                    let request = request_builder.body(body).unwrap();
+                    let response = black_box(app.oneshot(request).await.unwrap());
+                    
+                    // Verify response status codes are within reasonable range
+                    assert!(response.status().as_u16() >= 200 && response.status().as_u16() < 600);
+                })
             })
         });
     }

@@ -4,7 +4,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Benchmark
 use aiapiproxy::services::ApiConverter;
 use aiapiproxy::models::claude::*;
 use aiapiproxy::models::openai::*;
-use aiapiproxy::config::*;
+use aiapiproxy::config::settings::*;
 use std::collections::HashMap;
 use chrono::Utc;
 
