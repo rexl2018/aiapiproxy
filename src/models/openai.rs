@@ -149,13 +149,15 @@ pub struct OpenAIToolCall {
     pub function: OpenAIFunctionCall,
 }
 
-/// OpenAI function call
+/// OpenAI function call structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIFunctionCall {
-    /// Function name
-    pub name: String,
-    /// Function arguments
-    pub arguments: String,
+    /// Function name (optional for streaming)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Function arguments as JSON string (optional for streaming)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
 }
 
 /// OpenAI API response structure

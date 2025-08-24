@@ -143,10 +143,14 @@ impl ApiConverter {
         if let Some(tool_calls) = &message.tool_calls {
             for tool_call in tool_calls {
                 if tool_call.tool_type == "function" {
+                    // Handle optional name and arguments for streaming compatibility
+                    let name = tool_call.function.name.as_deref().unwrap_or("unknown_function");
+                    let arguments = tool_call.function.arguments.as_deref().unwrap_or("{}");
+                    
                     content_blocks.push(ClaudeContentBlock::ToolUse {
                         id: tool_call.id.clone(),
-                        name: tool_call.function.name.clone(),
-                        input: serde_json::from_str(&tool_call.function.arguments)
+                        name: name.to_string(),
+                        input: serde_json::from_str(arguments)
                             .unwrap_or_else(|_| serde_json::json!({})),
                     });
                 }
@@ -155,7 +159,8 @@ impl ApiConverter {
             // 🔍 DEBUG: 记录工具调用转换信息
             debug!("Converted {} OpenAI tool_calls to Claude ToolUse blocks", tool_calls.len());
             for tool_call in tool_calls {
-                debug!("  - Tool call: {} ({})", tool_call.function.name, tool_call.id);
+                let name = tool_call.function.name.as_deref().unwrap_or("unknown_function");
+                debug!("  - Tool call: {} ({})", name, tool_call.id);
             }
         }
         
@@ -327,8 +332,8 @@ impl ApiConverter {
                                 id,
                                 tool_type: "function".to_string(),
                                 function: OpenAIFunctionCall {
-                                    name,
-                                    arguments: input.to_string(),
+                                    name: Some(name),
+                                    arguments: Some(input.to_string()),
                                 },
                             });
                         }
