@@ -209,9 +209,10 @@ impl Settings {
     /// Get corresponding OpenAI model name
     pub fn get_openai_model(&self, claude_model: &str) -> Option<String> {
         match claude_model {
-            "claude-3-haiku" | "claude-3-haiku-20240307" => Some(self.model_mapping.haiku.clone()),
-            "claude-3-sonnet" | "claude-3-sonnet-20240229" | "claude-3-5-sonnet-20241022" => Some(self.model_mapping.sonnet.clone()),
-            "claude-3-opus" | "claude-3-opus-20240229" => Some(self.model_mapping.opus.clone()),
+            // 🔧 更通用的模型匹配：基于模型名称包含的关键词
+            model if model.contains("haiku") => Some(self.model_mapping.haiku.clone()),
+            model if model.contains("sonnet") => Some(self.model_mapping.sonnet.clone()),
+            model if model.contains("opus") => Some(self.model_mapping.opus.clone()),
             _ => {
                 // Check custom mappings
                 if let Some(mapped_model) = self.model_mapping.custom.get(claude_model) {
