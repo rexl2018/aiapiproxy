@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// System prompt type that can handle both string and array formats
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SystemPrompt {
     /// Single string system prompt
     String(String),
@@ -73,7 +72,7 @@ pub enum ClaudeContent {
 }
 
 /// Claude content block
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum ClaudeContentBlock {
     /// Text block
@@ -102,7 +101,7 @@ pub enum ClaudeContentBlock {
 }
 
 /// Claude image source
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClaudeImageSource {
     /// Source type (base64)
     #[serde(rename = "type")]
@@ -283,7 +282,7 @@ impl ClaudeContent {
                         ClaudeContentBlock::ToolResult { content, .. } => Some(content.clone()),
                     })
                     .collect::<Vec<String>>()
-                    .join(" ")
+                    .join("") // 🔧 修复：直接连接文本块，不添加额外空格
             }
         }
     }

@@ -69,7 +69,7 @@ fn test_to_claude_error() {
     
     assert_eq!(claude_error.error_type, "error");
     assert_eq!(claude_error.error.error_type, "invalid_request_error");
-    assert_eq!(claude_error.error.message, "请求验证失败: Invalid input parameter");
+    assert_eq!(claude_error.error.message, "Request validation failed: Invalid input parameter");
 }
 
 #[test]
@@ -77,32 +77,32 @@ fn test_error_helpers() {
     // 测试认证错误助手
     let auth_err = auth_error("Invalid token");
     assert!(matches!(auth_err, AppError::Authentication(_)));
-    assert_eq!(auth_err.to_string(), "认证失败: Invalid token");
+    assert_eq!(auth_err.to_string(), "Authentication failed: Invalid token");
     
     // 测试验证错误助手
     let validation_err = validation_error("Missing field");
     assert!(matches!(validation_err, AppError::Validation(_)));
-    assert_eq!(validation_err.to_string(), "请求验证失败: Missing field");
+    assert_eq!(validation_err.to_string(), "Request validation failed: Missing field");
     
     // 测试转换错误助手
     let conversion_err = conversion_error("Format mismatch");
     assert!(matches!(conversion_err, AppError::Conversion(_)));
-    assert_eq!(conversion_err.to_string(), "API转换失败: Format mismatch");
+    assert_eq!(conversion_err.to_string(), "API conversion failed: Format mismatch");
     
     // 测试外部API错误助手
     let external_err = external_api_error("OpenAI API failed");
     assert!(matches!(external_err, AppError::ExternalApi(_)));
-    assert_eq!(external_err.to_string(), "外部API错误: OpenAI API failed");
+    assert_eq!(external_err.to_string(), "External API error: OpenAI API failed");
     
     // 测试内部错误助手
     let internal_err = internal_error("Database connection failed");
     assert!(matches!(internal_err, AppError::Internal(_)));
-    assert_eq!(internal_err.to_string(), "内部服务器错误: Database connection failed");
+    assert_eq!(internal_err.to_string(), "Internal server error: Database connection failed");
     
     // 测试服务不可用错误助手
     let unavailable_err = service_unavailable_error("Service overloaded");
     assert!(matches!(unavailable_err, AppError::ServiceUnavailable(_)));
-    assert_eq!(unavailable_err.to_string(), "服务暂时不可用: Service overloaded");
+    assert_eq!(unavailable_err.to_string(), "Service temporarily unavailable: Service overloaded");
 }
 
 #[tokio::test]
@@ -219,7 +219,7 @@ fn test_error_chain() {
     assert!(app_error.should_log_details());
     
     let error_string = app_error.to_string();
-    assert!(error_string.contains("配置错误"));
+    assert!(error_string.contains("Configuration error"));
 }
 
 #[tokio::test]
@@ -282,19 +282,19 @@ fn test_error_display_formatting() {
         let display_string = error.to_string();
         assert!(!display_string.is_empty());
         
-        // 确保错误消息包含中文描述
+        // 确保错误消息包含英文描述
         match error {
-            AppError::Authentication(_) => assert!(display_string.contains("认证失败")),
-            AppError::Authorization(_) => assert!(display_string.contains("权限不足")),
-            AppError::Validation(_) => assert!(display_string.contains("请求验证失败")),
-            AppError::Conversion(_) => assert!(display_string.contains("API转换失败")),
-            AppError::ExternalApi(_) => assert!(display_string.contains("外部API错误")),
-            AppError::RateLimit => assert!(display_string.contains("请求过于频繁")),
-            AppError::ServiceUnavailable(_) => assert!(display_string.contains("服务暂时不可用")),
-            AppError::Internal(_) => assert!(display_string.contains("内部服务器错误")),
-            AppError::Timeout => assert!(display_string.contains("请求超时")),
-            AppError::NotFound(_) => assert!(display_string.contains("资源未找到")),
-            AppError::PayloadTooLarge => assert!(display_string.contains("请求体过大")),
+            AppError::Authentication(_) => assert!(display_string.contains("Authentication failed")),
+            AppError::Authorization(_) => assert!(display_string.contains("Insufficient permissions")),
+            AppError::Validation(_) => assert!(display_string.contains("Request validation failed")),
+            AppError::Conversion(_) => assert!(display_string.contains("API conversion failed")),
+            AppError::ExternalApi(_) => assert!(display_string.contains("External API error")),
+            AppError::RateLimit => assert!(display_string.contains("Rate limit exceeded")),
+            AppError::ServiceUnavailable(_) => assert!(display_string.contains("Service temporarily unavailable")),
+            AppError::Internal(_) => assert!(display_string.contains("Internal server error")),
+            AppError::Timeout => assert!(display_string.contains("Request timeout")),
+            AppError::NotFound(_) => assert!(display_string.contains("Resource not found")),
+            AppError::PayloadTooLarge => assert!(display_string.contains("Payload too large")),
             _ => {}
         }
     }

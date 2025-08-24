@@ -54,7 +54,7 @@ fn test_convert_simple_text_request() {
             role: "user".to_string(),
             content: ClaudeContent::Text("Hello, world!".to_string()),
         }],
-        system: Some("You are a helpful assistant.".to_string()),
+        system: Some(SystemPrompt::String("You are a helpful assistant.".to_string())),
         temperature: Some(0.7),
         top_p: Some(0.9),
         stop_sequences: Some(vec!["\n\n".to_string()]),
