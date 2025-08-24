@@ -28,6 +28,17 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Load environment variables from .env file
+load_env() {
+    # Load .env file (if exists)
+    if [ -f ".env" ]; then
+        print_info "Loading .env configuration file"
+        export $(cat .env | grep -v '^#' | xargs)
+    else
+        print_warning ".env file does not exist, using environment variables"
+    fi
+}
+
 # Check environment variables
 check_env() {
     print_info "Checking environment variables..."
@@ -71,14 +82,6 @@ build_project() {
 # Run project
 run_project() {
     print_info "Starting AI API Proxy..."
-    
-    # Load .env file (if exists)
-    if [ -f ".env" ]; then
-        print_info "Loading .env configuration file"
-        export $(cat .env | grep -v '^#' | xargs)
-    else
-        print_warning ".env file does not exist, using default configuration"
-    fi
     
     # Set default values
     export SERVER_HOST=${SERVER_HOST:-"0.0.0.0"}
@@ -131,12 +134,14 @@ main() {
             exit 0
             ;;
         --check|-c)
+            load_env
             check_env
             check_dependencies
             print_success "Environment check completed"
             exit 0
             ;;
         --build-only|-b)
+            load_env
             check_env
             check_dependencies
             build_project "$1"
@@ -144,12 +149,14 @@ main() {
             exit 0
             ;;
         --release|-r)
+            load_env
             check_env
             check_dependencies
             build_project "$1"
             run_project "$1"
             ;;
         "")
+            load_env
             check_env
             check_dependencies
             build_project

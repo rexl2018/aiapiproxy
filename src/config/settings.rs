@@ -157,9 +157,18 @@ impl Settings {
             anyhow::bail!("Port number cannot be 0");
         }
         
-        // Validate API key format
-        if !self.openai.api_key.starts_with("sk-") {
-            anyhow::bail!("Invalid OpenAI API key format, should start with 'sk-'");
+        // Validate API key format - accept various formats for different providers
+        if self.openai.api_key.is_empty() {
+            anyhow::bail!("OpenAI API key cannot be empty");
+        }
+        
+        // Basic format validation - ensure no whitespace and minimum length
+        if self.openai.api_key.contains(char::is_whitespace) {
+            anyhow::bail!("OpenAI API key cannot contain whitespace characters");
+        }
+        
+        if self.openai.api_key.len() < 8 {
+            anyhow::bail!("OpenAI API key must be at least 8 characters long");
         }
         
         // Validate URL format

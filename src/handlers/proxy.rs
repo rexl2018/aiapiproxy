@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info};
+use uuid::Uuid;
 
 /// Handle Claude message requests
 /// 
@@ -29,6 +30,11 @@ pub async fn handle_messages(
 ) -> Result<Response<axum::body::Body>, StatusCode> {
     debug!("Received Claude API request");
     
+    // 🔍 DEBUG: 记录完整的客户端请求内容
+    if let Ok(request_json) = serde_json::to_string_pretty(&claude_request) {
+        info!("📥 Client Request Body:\n{}", request_json);
+    }
+    
     // Validate request
     if let Err(error_msg) = validate_claude_request(&claude_request) {
         warn!("Request validation failed: {}", error_msg);
@@ -37,7 +43,13 @@ pub async fn handle_messages(
     
     // Convert Claude request to OpenAI request
     let openai_request = match state.converter.convert_request(claude_request.clone()) {
-        Ok(req) => req,
+        Ok(req) => {
+            // 🔍 DEBUG: 记录转换后的OpenAI请求内容
+            if let Ok(openai_json) = serde_json::to_string_pretty(&req) {
+                info!("🔄 Converted OpenAI Request:\n{}", openai_json);
+            }
+            req
+        },
         Err(e) => {
             error!("Request conversion failed: {}", e);
             return Ok(create_error_response("conversion_error", "Failed to convert request").into_response());
@@ -65,7 +77,13 @@ async fn handle_normal_request(
     
     // Call OpenAI API
     let openai_response = match state.openai_client.chat_completions_with_retry(openai_request).await {
-        Ok(response) => response,
+        Ok(response) => {
+            // 🔍 DEBUG: 记录OpenAI API响应内容
+            if let Ok(response_json) = serde_json::to_string_pretty(&response) {
+                info!("📤 OpenAI API Response:\n{}", response_json);
+            }
+            response
+        },
         Err(e) => {
             error!("OpenAI API request failed: {}", e);
             return Err(StatusCode::BAD_GATEWAY);
@@ -74,7 +92,13 @@ async fn handle_normal_request(
     
     // Convert response format
     let claude_response = match state.converter.convert_response(openai_response, &original_model) {
-        Ok(response) => response,
+        Ok(response) => {
+            // 🔍 DEBUG: 记录最终返回给客户端的Claude响应
+            if let Ok(claude_json) = serde_json::to_string_pretty(&response) {
+                info!("📋 Final Claude Response:\n{}", claude_json);
+            }
+            response
+        },
         Err(e) => {
             error!("Response conversion failed: {}", e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -218,11 +242,29 @@ fn validate_claude_request(request: &ClaudeRequest) -> Result<(), String> {
             return Err(format!("Message {} role is invalid: {}", i, message.role));
         }
         
-        // Check if content is empty
+        // Check if content is empty - allow messages with whitespace or special characters
         let content_text = message.content.extract_text();
-        if content_text.trim().is_empty() && !message.content.has_images() {
+        let has_images = message.content.has_images();
+        let has_tool_calls = message.content.has_tool_calls();
+        
+        // 🔍 DEBUG: 详细记录消息验证信息
+        debug!("Validating message {}: role={}, content_text_len={}, has_images={}, has_tool_calls={}", 
+               i, message.role, content_text.len(), has_images, has_tool_calls);
+        debug!("Message {} content type: {:?}", i, message.content);
+        
+        // Only reject if content is completely empty (no text, images, or tool calls)
+        // 🔧 修复工具调用验证：允许只包含工具调用的消息
+        if content_text.is_empty() && !has_images && !has_tool_calls {
+            warn!("Message {} validation failed - completely empty content: text_empty={}, no_images={}, no_tool_calls={}", 
+                  i, content_text.is_empty(), !has_images, !has_tool_calls);
+            warn!("Complete message {} details: role='{}', content={:#?}", i, message.role, message.content);
+            warn!("Full request context: model='{}', messages_count={}, max_tokens={}", 
+                  request.model, request.messages.len(), request.max_tokens);
             return Err(format!("Message {} content cannot be empty", i));
         }
+        
+        // For text-only messages, allow whitespace-only content as some clients may send formatting
+        // This is more permissive than the original validation
     }
     
     // Check temperature parameter
@@ -257,15 +299,29 @@ fn extract_auth_header(headers: &HeaderMap, auth_header_name: &str) -> Option<St
         .map(|s| s.to_string())
 }
 
-/// Error response helper function
-fn create_error_response(error_type: &str, message: &str) -> Json<ClaudeErrorResponse> {
-    Json(ClaudeErrorResponse {
-        error_type: "error".to_string(),
-        error: ClaudeError {
-            error_type: error_type.to_string(),
-            message: message.to_string(),
+/// Error response helper function that creates a Claude-compatible error response
+fn create_error_response(error_type: &str, message: &str) -> Json<serde_json::Value> {
+    // Create a response that matches Claude API error format but includes expected fields
+    let error_response = serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": error_type,
+            "message": message
         },
-    })
+        // Include content field as empty array to prevent client-side filter errors
+        "content": [],
+        // Include other fields that clients might expect
+        "id": format!("error_{}", uuid::Uuid::new_v4().simple()),
+        "model": "claude-3-sonnet",
+        "role": "assistant",
+        "stop_reason": "error",
+        "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+        }
+    });
+    
+    Json(error_response)
 }
 
 #[cfg(test)]

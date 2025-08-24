@@ -5,6 +5,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// System prompt type that can handle both string and array formats
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SystemPrompt {
+    /// Single string system prompt
+    String(String),
+    /// Array of system message blocks (for compatibility with some clients)
+    Array(Vec<ClaudeContentBlock>),
+}
+
 /// Claude API request structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeRequest {
@@ -14,9 +24,9 @@ pub struct ClaudeRequest {
     pub max_tokens: u32,
     /// Message list
     pub messages: Vec<ClaudeMessage>,
-    /// System prompt (optional)
+    /// System prompt (optional) - accepts both string and array formats
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<SystemPrompt>,
     /// Temperature parameter (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -35,6 +45,12 @@ pub struct ClaudeRequest {
     /// Metadata (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
+    /// Tools (optional) - for function calling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ClaudeTool>>,
+    /// Tool choice (optional) - controls tool usage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
 }
 
 /// Claude message structure
@@ -68,6 +84,21 @@ pub enum ClaudeContentBlock {
     Image {
         source: ClaudeImageSource,
     },
+    /// Tool use block
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// Tool result block
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
 }
 
 /// Claude image source
@@ -80,6 +111,18 @@ pub struct ClaudeImageSource {
     pub media_type: String,
     /// Image data
     pub data: String,
+}
+
+/// Claude tool definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeTool {
+    /// Tool name
+    pub name: String,
+    /// Tool description (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Input schema for the tool
+    pub input_schema: serde_json::Value,
 }
 
 /// Claude API response structure
@@ -204,8 +247,29 @@ pub struct ClaudeErrorResponse {
     pub error: ClaudeError,
 }
 
+impl SystemPrompt {
+    /// Extract text content from system prompt
+    pub fn extract_text(&self) -> String {
+        match self {
+            SystemPrompt::String(text) => text.clone(),
+            SystemPrompt::Array(blocks) => {
+                blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ClaudeContentBlock::Text { text } => Some(text.clone()),
+                        ClaudeContentBlock::Image { .. } => None,
+                        ClaudeContentBlock::ToolUse { .. } => None,
+                        ClaudeContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                    })
+                    .collect::<Vec<String>>()
+                    .join(" ")
+            }
+        }
+    }
+}
+
 impl ClaudeContent {
-    /// Extract text content
+    /// Extract text content from Claude content
     pub fn extract_text(&self) -> String {
         match self {
             ClaudeContent::Text(text) => text.clone(),
@@ -214,10 +278,12 @@ impl ClaudeContent {
                     .iter()
                     .filter_map(|block| match block {
                         ClaudeContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
+                        ClaudeContentBlock::Image { .. } => None,
+                        ClaudeContentBlock::ToolUse { .. } => None,
+                        ClaudeContentBlock::ToolResult { content, .. } => Some(content.clone()),
                     })
-                    .collect::<Vec<_>>()
-                    .join("")
+                    .collect::<Vec<String>>()
+                    .join(" ")
             }
         }
     }
@@ -231,13 +297,23 @@ impl ClaudeContent {
             }
         }
     }
+    
+    /// Check if content has tool calls
+    pub fn has_tool_calls(&self) -> bool {
+        match self {
+            ClaudeContent::Text(_) => false,
+            ClaudeContent::Blocks(blocks) => {
+                blocks.iter().any(|block| matches!(block, ClaudeContentBlock::ToolUse { .. }))
+            }
+        }
+    }
 }
 
 impl Default for ClaudeRequest {
     fn default() -> Self {
         Self {
-            model: "claude-3-5-sonnet-20241022".to_string(),
-            max_tokens: 1024,
+            model: String::new(),
+            max_tokens: 1000,
             messages: Vec::new(),
             system: None,
             temperature: None,
@@ -246,6 +322,8 @@ impl Default for ClaudeRequest {
             stop_sequences: None,
             stream: None,
             metadata: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 }

@@ -1,0 +1,35 @@
+{
+  "model": "claude-3-haiku-20240307",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What's the weather like in Beijing today? Please use the weather tool to check."
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get current weather information for a specific city",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "The city name to get weather for"
+          },
+          "unit": {
+            "type": "string",
+            "enum": ["celsius", "fahrenheit"],
+            "description": "Temperature unit"
+          }
+        },
+        "required": ["city"]
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "metadata": {
+    "user_id": "tool_test_user_123"
+  }
+}
