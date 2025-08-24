@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 /// System prompt type that can handle both string and array formats
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
 pub enum SystemPrompt {
     /// Single string system prompt
     String(String),
