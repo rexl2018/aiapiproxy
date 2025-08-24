@@ -75,7 +75,7 @@ fn create_complex_claude_request() -> ClaudeRequest {
                 content: ClaudeContent::Text("Tell me more about Paris.".to_string()),
             },
         ],
-        system: Some("You are a helpful geography assistant.".to_string()),
+        system: Some(SystemPrompt::String("You are a helpful geography assistant.".to_string())),
         temperature: Some(0.7),
         top_p: Some(0.9),
         stop_sequences: Some(vec!["\n\n".to_string()]),

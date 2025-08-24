@@ -86,7 +86,22 @@ async fn handle_normal_request(
         },
         Err(e) => {
             error!("OpenAI API request failed: {}", e);
-            return Err(StatusCode::BAD_GATEWAY);
+            
+            // Convert OpenAI API errors to Claude-compatible error responses
+            let error_message = e.to_string();
+            
+            // Check for specific error types
+            let (error_type, claude_message) = if error_message.contains("TooManyRequests") || error_message.contains("RateLimitExceeded") {
+                ("rate_limit_error", "Rate limit exceeded. Please try again later.")
+            } else if error_message.contains("authentication") || error_message.contains("Invalid API key") {
+                ("authentication_error", "Invalid API key provided.")
+            } else if error_message.contains("insufficient_quota") || error_message.contains("quota") {
+                ("billing_error", "Insufficient quota or billing issue.")
+            } else {
+                ("api_error", "External API request failed.")
+            };
+            
+            return Ok(create_error_response(error_type, claude_message).into_response());
         }
     };
     
@@ -135,10 +150,35 @@ async fn handle_stream_request(
             Ok(stream) => stream,
             Err(e) => {
                 error!("OpenAI streaming API request failed: {}", e);
-                let error_event = Event::default()
-                    .event("error")
-                    .data(format!("{{\"error\": \"{}\"}}", e));
-                let _ = tx.send(Ok(error_event)).await;
+                
+                // Convert OpenAI API errors to Claude-compatible error events
+                let error_message = e.to_string();
+                
+                // Check for specific error types
+                let (error_type, claude_message) = if error_message.contains("TooManyRequests") || error_message.contains("RateLimitExceeded") {
+                    ("rate_limit_error", "Rate limit exceeded. Please try again later.")
+                } else if error_message.contains("authentication") || error_message.contains("Invalid API key") {
+                    ("authentication_error", "Invalid API key provided.")
+                } else if error_message.contains("insufficient_quota") || error_message.contains("quota") {
+                    ("billing_error", "Insufficient quota or billing issue.")
+                } else {
+                    ("api_error", "External API request failed.")
+                };
+                
+                // Create Claude-compatible error event
+                let claude_error = ClaudeStreamEvent::Error {
+                    error: ClaudeError {
+                        error_type: error_type.to_string(),
+                        message: claude_message.to_string(),
+                    },
+                };
+                
+                if let Ok(error_json) = serde_json::to_string(&claude_error) {
+                    let error_event = Event::default()
+                        .event("error")
+                        .data(error_json);
+                    let _ = tx.send(Ok(error_event)).await;
+                }
                 return;
             }
         };

@@ -61,7 +61,7 @@ fn create_complex_claude_request() -> ClaudeRequest {
                 content: ClaudeContent::Text("Can you explain machine learning?".to_string()),
             },
         ],
-        system: Some("You are an expert in artificial intelligence and machine learning.".to_string()),
+        system: Some(SystemPrompt::String("You are an expert in artificial intelligence and machine learning.".to_string())),
         temperature: Some(0.7),
         top_p: Some(0.9),
         ..Default::default()
