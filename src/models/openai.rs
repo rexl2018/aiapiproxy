@@ -140,11 +140,12 @@ pub struct OpenAIFunction {
 /// OpenAI tool call
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIToolCall {
-    /// Call ID
-    pub id: String,
-    /// Tool type
-    #[serde(rename = "type")]
-    pub tool_type: String,
+    /// Call ID (optional for streaming)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Tool type (optional for streaming)
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub tool_type: Option<String>,
     /// Function call
     pub function: OpenAIFunctionCall,
 }

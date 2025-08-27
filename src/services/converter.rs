@@ -142,13 +142,14 @@ impl ApiConverter {
         // Convert OpenAI tool_calls to Claude ToolUse blocks (🔧 修复工具调用转换)
         if let Some(tool_calls) = &message.tool_calls {
             for tool_call in tool_calls {
-                if tool_call.tool_type == "function" {
-                    // Handle optional name and arguments for streaming compatibility
+                if tool_call.tool_type.as_deref() == Some("function") {
+                    // Handle optional fields for streaming compatibility
+                    let id = tool_call.id.as_deref().unwrap_or("unknown_id");
                     let name = tool_call.function.name.as_deref().unwrap_or("unknown_function");
                     let arguments = tool_call.function.arguments.as_deref().unwrap_or("{}");
                     
                     content_blocks.push(ClaudeContentBlock::ToolUse {
-                        id: tool_call.id.clone(),
+                        id: id.to_string(),
                         name: name.to_string(),
                         input: serde_json::from_str(arguments)
                             .unwrap_or_else(|_| serde_json::json!({})),
@@ -159,8 +160,9 @@ impl ApiConverter {
             // 🔍 DEBUG: 记录工具调用转换信息
             debug!("Converted {} OpenAI tool_calls to Claude ToolUse blocks", tool_calls.len());
             for tool_call in tool_calls {
+                let id = tool_call.id.as_deref().unwrap_or("unknown_id");
                 let name = tool_call.function.name.as_deref().unwrap_or("unknown_function");
-                debug!("  - Tool call: {} ({})", name, tool_call.id);
+                debug!("  - Tool call: {} ({})", name, id);
             }
         }
         
@@ -329,8 +331,8 @@ impl ApiConverter {
                         ClaudeContentBlock::ToolUse { id, name, input } => {
                             // Convert Claude tool use to OpenAI tool call
                             tool_calls.push(OpenAIToolCall {
-                                id,
-                                tool_type: "function".to_string(),
+                                id: Some(id),
+                                tool_type: Some("function".to_string()),
                                 function: OpenAIFunctionCall {
                                     name: Some(name),
                                     arguments: Some(input.to_string()),
@@ -410,9 +412,10 @@ mod tests {
                 port: 8080,
             },
             openai: OpenAIConfig {
-                api_key: "sk-test".to_string(),
+                api_key: "test_key".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
                 timeout: 30,
+                stream_timeout: 300,
             },
             model_mapping: ModelMapping {
                 haiku: "gpt-4o-mini".to_string(),

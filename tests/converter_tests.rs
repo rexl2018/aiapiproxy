@@ -15,9 +15,10 @@ fn create_test_settings() -> Settings {
             port: 8080,
         },
         openai: OpenAIConfig {
-            api_key: "sk-test".to_string(),
+            api_key: "test_key".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             timeout: 30,
+            stream_timeout: 300,
         },
         model_mapping: ModelMapping {
             haiku: "gpt-4o-mini".to_string(),

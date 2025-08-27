@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone)]
 pub struct OpenAIClient {
     client: Client,
+    stream_client: Client,
     settings: Settings,
 }
 
@@ -26,7 +27,13 @@ impl OpenAIClient {
             .build()
             .context("Failed to create HTTP client")?;
         
-        Ok(Self { client, settings })
+        let stream_client = Client::builder()
+            .timeout(Duration::from_secs(settings.openai.stream_timeout))
+            .user_agent("aiapiproxy/0.1.0")
+            .build()
+            .context("Failed to create streaming HTTP client")?;
+        
+        Ok(Self { client, stream_client, settings })
     }
     
     /// Send chat completion request
@@ -56,7 +63,7 @@ impl OpenAIClient {
         
         let url = format!("{}/chat/completions", self.settings.openai.base_url);
         
-        let response = self.client
+        let response = self.stream_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.settings.openai.api_key))
             .header("Content-Type", "application/json")
@@ -297,10 +304,11 @@ mod tests {
                 port: 8080,
             },
             openai: OpenAIConfig {
-                api_key: "sk-test".to_string(),
-                base_url: "https://api.openai.com/v1".to_string(),
-                timeout: 30,
-            },
+            api_key: "test_key".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            timeout: 30,
+            stream_timeout: 300,
+        },
             model_mapping: ModelMapping {
                 haiku: "gpt-4o-mini".to_string(),
                 sonnet: "gpt-4o".to_string(),

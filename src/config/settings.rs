@@ -43,6 +43,8 @@ pub struct OpenAIConfig {
     pub base_url: String,
     /// Request timeout in seconds
     pub timeout: u64,
+    /// Streaming request timeout in seconds
+    pub stream_timeout: u64,
 }
 
 /// Model mapping configuration
@@ -110,6 +112,9 @@ impl Settings {
                 timeout: get_env_or_default("REQUEST_TIMEOUT", "30")
                     .parse()
                     .context("Invalid timeout")?,
+                stream_timeout: get_env_or_default("STREAM_TIMEOUT", "300")
+                    .parse()
+                    .context("Invalid stream timeout")?,
             },
             model_mapping: ModelMapping {
                 haiku: get_env_or_default("CLAUDE_HAIKU_MODEL", "gpt-4o-mini"),
@@ -292,10 +297,11 @@ mod tests {
                 port: 8080,
             },
             openai: OpenAIConfig {
-                api_key: "sk-test".to_string(),
-                base_url: "https://api.openai.com/v1".to_string(),
-                timeout: 30,
-            },
+            api_key: "test_key".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            timeout: 30,
+            stream_timeout: 300,
+        },
             model_mapping: ModelMapping {
                 haiku: "gpt-4o-mini".to_string(),
                 sonnet: "gpt-4o".to_string(),
