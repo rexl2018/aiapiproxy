@@ -23,10 +23,11 @@ impl ApiConverter {
     }
     
     /// Convert Claude request to OpenAI request
+    /// Implements the conversion logic as specified in the conversion guide
     pub fn convert_request(&self, claude_req: ClaudeRequest) -> Result<OpenAIRequest> {
         debug!("Starting conversion from Claude request to OpenAI format");
         
-        // Map model name
+        // Map model name according to conversion guide
         let openai_model = self.settings
             .get_openai_model(&claude_req.model)
             .context("Unable to map Claude model to OpenAI model")?;
@@ -34,9 +35,23 @@ impl ApiConverter {
         // Convert messages
         let mut openai_messages = Vec::new();
         
-        // If there's a system prompt, add it as a system message
+        // Handle system prompt conversion as per guide
         if let Some(system) = claude_req.system {
-            let system_text = system.extract_text();
+            let system_text = match system {
+                SystemPrompt::String(text) => text,
+                SystemPrompt::Array(blocks) => {
+                    // Merge array format into single string as per guide
+                    blocks.iter()
+                        .map(|block| match block {
+                            ClaudeContentBlock::Text { text } => text.clone(),
+                            _ => String::new(), // Skip non-text blocks in system prompt
+                        })
+                        .filter(|text| !text.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            };
+            
             openai_messages.push(OpenAIMessage {
                 role: "system".to_string(),
                 content: Some(OpenAIContent::Text(system_text)),
@@ -67,7 +82,7 @@ impl ApiConverter {
             }
         }
         
-        // Convert tools if present (🔧 添加工具调用支持)
+        // Convert tools if present - Claude to OpenAI format conversion
         let openai_tools: Option<Vec<OpenAITool>> = claude_req.tools.as_ref().map(|claude_tools| {
             claude_tools.iter().map(|claude_tool| {
                 OpenAITool {
@@ -81,20 +96,21 @@ impl ApiConverter {
             }).collect()
         });
         
-        // 🔍 DEBUG: 记录工具转换信息
-        if let Some(tools) = &openai_tools {
-            debug!("Converted {} Claude tools to OpenAI format", tools.len());
-            for tool in tools {
-                debug!("  - Tool: {} ({})", tool.function.name, 
-                       tool.function.description.as_deref().unwrap_or("no description"));
-            }
-        }
+        debug!("Converted {} Claude tools to OpenAI format", 
+               openai_tools.as_ref().map(|t| t.len()).unwrap_or(0));
         
-        // Build OpenAI request
+        // Ensure max_tokens is set (required by Anthropic API as per guide)
+        let max_tokens = if claude_req.max_tokens == 0 {
+            4096 // Default value as per conversion guide
+        } else {
+            claude_req.max_tokens
+        };
+        
+        // Build OpenAI request according to conversion guide
         let openai_req = OpenAIRequest {
             model: openai_model,
             messages: openai_messages,
-            max_tokens: Some(claude_req.max_tokens),
+            max_tokens: Some(max_tokens),
             temperature: claude_req.temperature,
             top_p: claude_req.top_p,
             stop: claude_req.stop_sequences,
@@ -103,11 +119,11 @@ impl ApiConverter {
             presence_penalty: None,
             frequency_penalty: None,
             logit_bias: None,
-            user: user_id, // 🔧 将metadata中的user_id映射到OpenAI的user字段
+            user: user_id, // Map metadata user_id to OpenAI user field
             response_format: None,
             seed: None,
-            tools: openai_tools, // 🔧 添加转换后的工具
-            tool_choice: claude_req.tool_choice.clone(), // 🔧 保持工具选择策略
+            tools: openai_tools,
+            tool_choice: claude_req.tool_choice.clone(),
         };
         
         debug!("Claude request conversion completed");
@@ -115,6 +131,7 @@ impl ApiConverter {
     }
     
     /// Convert OpenAI response to Claude response
+    /// Implements the conversion logic as specified in the conversion guide
     pub fn convert_response(&self, openai_resp: OpenAIResponse, original_model: &str) -> Result<ClaudeResponse> {
         debug!("Starting conversion from OpenAI response to Claude format");
         
@@ -125,67 +142,50 @@ impl ApiConverter {
         let choice = &openai_resp.choices[0];
         let message = &choice.message;
         
-        // Extract content and tool calls
-        let content_text = message.content
-            .as_ref()
-            .map(|c| c.extract_text())
-            .unwrap_or_default();
-        
-        // Build Claude content blocks
+        // Build Claude content blocks according to conversion guide
         let mut content_blocks = Vec::new();
         
         // Add text content if present
-        if !content_text.is_empty() {
-            content_blocks.push(ClaudeContentBlock::Text { text: content_text });
+        if let Some(content) = &message.content {
+            let content_text = content.extract_text();
+            if !content_text.is_empty() {
+                content_blocks.push(ClaudeContentBlock::Text { text: content_text });
+            }
         }
         
-        // Convert OpenAI tool_calls to Claude ToolUse blocks (🔧 修复工具调用转换)
+        // Convert OpenAI tool_calls to Claude ToolUse blocks
         if let Some(tool_calls) = &message.tool_calls {
             for tool_call in tool_calls {
                 if tool_call.tool_type.as_deref() == Some("function") {
-                    // Handle optional fields for streaming compatibility
-                    let id = tool_call.id.as_deref().unwrap_or("unknown_id");
+                    // Safe parsing of tool arguments as per conversion guide
+                    let _id = tool_call.id.as_deref().unwrap_or("unknown_id");
                     let name = tool_call.function.name.as_deref().unwrap_or("unknown_function");
                     let arguments = tool_call.function.arguments.as_deref().unwrap_or("{}");
                     
+                    // Parse tool arguments safely (handles empty strings)
+                    let input = self.safe_parse_tool_arguments(arguments);
+                    
                     content_blocks.push(ClaudeContentBlock::ToolUse {
-                        id: id.to_string(),
+                        id: format!("toolu_{}", self.generate_id()),
                         name: name.to_string(),
-                        input: serde_json::from_str(arguments)
-                            .unwrap_or_else(|_| serde_json::json!({})),
+                        input,
                     });
                 }
             }
             
-            // 🔍 DEBUG: 记录工具调用转换信息
             debug!("Converted {} OpenAI tool_calls to Claude ToolUse blocks", tool_calls.len());
-            for tool_call in tool_calls {
-                let id = tool_call.id.as_deref().unwrap_or("unknown_id");
-                let name = tool_call.function.name.as_deref().unwrap_or("unknown_function");
-                debug!("  - Tool call: {} ({})", name, id);
-            }
         }
         
-        // Map stop reason
+        // Map finish reason to stop reason as per conversion guide
         let stop_reason = self.map_finish_reason_to_stop_reason(choice.finish_reason.as_deref());
         
-        // 🔍 DEBUG: 记录响应转换的详细信息
-        debug!("Converted OpenAI response to Claude format:");
-        debug!("  - Original OpenAI model: {}", openai_resp.model);
-        debug!("  - Mapped to Claude model: {}", original_model);
-        debug!("  - Token usage: {} input, {} output", 
-               openai_resp.usage.prompt_tokens, 
-               openai_resp.usage.completion_tokens);
-        debug!("  - Stop reason: {} -> {}", 
-               choice.finish_reason.as_deref().unwrap_or("none"), 
-               &stop_reason);
-        if let Some(system_fingerprint) = &openai_resp.system_fingerprint {
-            debug!("  - System fingerprint: {}", system_fingerprint);
-        }
+        debug!("Converted OpenAI response: model={}, tokens={}+{}, stop_reason={}", 
+               original_model, openai_resp.usage.prompt_tokens, 
+               openai_resp.usage.completion_tokens, &stop_reason);
         
-        // Build Claude response (参考claude-code-proxy项目，保留更多原始信息)
+        // Build Claude response according to conversion guide format
         let claude_resp = ClaudeResponse {
-            id: format!("msg_{}", Uuid::new_v4().simple()),
+            id: format!("msg_{}", self.generate_id()),
             response_type: "message".to_string(),
             role: "assistant".to_string(),
             content: content_blocks,
@@ -203,7 +203,12 @@ impl ApiConverter {
     }
     
     /// Convert OpenAI stream response to Claude stream events
-    pub fn convert_stream_chunk(&self, openai_chunk: OpenAIStreamResponse, original_model: &str) -> Result<Vec<ClaudeStreamEvent>> {
+    /// Implements complete streaming conversion as per conversion guide
+    pub fn convert_stream_chunk(
+        &self, 
+        openai_chunk: OpenAIStreamResponse, 
+        original_model: &str
+    ) -> Result<Vec<ClaudeStreamEvent>> {
         debug!("Converting OpenAI stream response chunk");
         
         let mut events = Vec::new();
@@ -215,11 +220,11 @@ impl ApiConverter {
         let choice = &openai_chunk.choices[0];
         let delta = &choice.delta;
         
-        // If this is the first chunk (contains role info), generate message start event
+        // Generate message_start event for first chunk (contains role)
         if delta.role.is_some() {
-            let message_start = ClaudeStreamEvent::MessageStart {
+            events.push(ClaudeStreamEvent::MessageStart {
                 message: ClaudeStreamMessage {
-                    id: format!("msg_{}", Uuid::new_v4().simple()),
+                    id: format!("msg_{}", self.generate_id()),
                     message_type: "message".to_string(),
                     role: "assistant".to_string(),
                     content: vec![],
@@ -231,59 +236,92 @@ impl ApiConverter {
                         output_tokens: 0,
                     },
                 },
-            };
-            events.push(message_start);
+            });
             
-            // Content block start event
-            let content_block_start = ClaudeStreamEvent::ContentBlockStart {
+            // Content block start event for text
+            events.push(ClaudeStreamEvent::ContentBlockStart {
                 index: 0,
                 content_block: ClaudeContentBlock::Text { text: String::new() },
-            };
-            events.push(content_block_start);
+            });
         }
         
-        // If there's content delta, generate content block delta event
+        // Handle content delta events
         if let Some(content) = &delta.content {
             if !content.is_empty() {
-                let content_delta = ClaudeStreamEvent::ContentBlockDelta {
+                events.push(ClaudeStreamEvent::ContentBlockDelta {
                     index: 0,
                     delta: ClaudeContentDelta::TextDelta {
                         text: content.clone(),
                     },
-                };
-                events.push(content_delta);
+                });
             }
         }
         
-        // If this is the last chunk (has finish reason), generate end events
+        // Handle tool calls in streaming (as per conversion guide)
+        if let Some(tool_calls) = &delta.tool_calls {
+            for (i, tool_call) in tool_calls.iter().enumerate() {
+                let function = &tool_call.function;
+                
+                if let Some(name) = &function.name {
+                    // Tool use content block start
+                    events.push(ClaudeStreamEvent::ContentBlockStart {
+                        index: (i + 1) as u32,
+                        content_block: ClaudeContentBlock::ToolUse {
+                            id: format!("toolu_{}", self.generate_id()),
+                            name: name.clone(),
+                            input: serde_json::json!({}),
+                        },
+                    });
+                }
+                
+                if let Some(arguments) = &function.arguments {
+                    // Tool input delta (partial JSON)
+                    events.push(ClaudeStreamEvent::ContentBlockDelta {
+                        index: (i + 1) as u32,
+                        delta: ClaudeContentDelta::TextDelta {
+                            text: arguments.clone(),
+                        },
+                    });
+                }
+            }
+        }
+        
+        // Handle completion events
         if let Some(finish_reason) = &choice.finish_reason {
-            // Content block stop event
-            let content_block_stop = ClaudeStreamEvent::ContentBlockStop { index: 0 };
-            events.push(content_block_stop);
+            // Content block stop events
+            events.push(ClaudeStreamEvent::ContentBlockStop { index: 0 });
             
-            // Message delta event (contains stop reason)
+            // Stop tool use blocks if any
+            if let Some(tool_calls) = &delta.tool_calls {
+                for i in 0..tool_calls.len() {
+                    events.push(ClaudeStreamEvent::ContentBlockStop { 
+                        index: (i + 1) as u32 
+                    });
+                }
+            }
+            
+            // Message delta with stop reason
             let stop_reason = self.map_finish_reason_to_stop_reason(Some(finish_reason));
-            let message_delta = ClaudeStreamEvent::MessageDelta {
+            events.push(ClaudeStreamEvent::MessageDelta {
                 delta: ClaudeMessageDelta {
                     stop_reason: Some(stop_reason),
                     stop_sequence: None,
                 },
                 usage: ClaudeUsage {
-                    input_tokens: 0, // Stream responses usually don't include usage stats
+                    input_tokens: 0,
                     output_tokens: 0,
                 },
-            };
-            events.push(message_delta);
+            });
             
-            // Message stop event
-            let message_stop = ClaudeStreamEvent::MessageStop;
-            events.push(message_stop);
+            // Final message stop event
+            events.push(ClaudeStreamEvent::MessageStop);
         }
         
         Ok(events)
     }
     
     /// Convert OpenAI error to Claude error
+    /// Maps all provider errors to OpenAI-compatible format as per guide
     pub fn convert_error(&self, openai_error: OpenAIError) -> ClaudeErrorResponse {
         debug!("Converting OpenAI error to Claude format");
         
@@ -298,7 +336,30 @@ impl ApiConverter {
         }
     }
     
+    /// Convert Anthropic error to OpenAI-compatible error
+    /// Implements error mapping as specified in conversion guide
+    pub fn convert_anthropic_error(&self, anthropic_error: &str, error_type: &str) -> OpenAIError {
+        let (openai_type, openai_message) = match error_type {
+            "invalid_request_error" => ("invalid_request_error", anthropic_error),
+            "authentication_error" => ("authentication_error", anthropic_error),
+            "permission_error" => ("permission_error", anthropic_error),
+            "not_found_error" => ("not_found_error", anthropic_error),
+            "rate_limit_error" => ("rate_limit_error", "Rate limit exceeded. Please try again later."),
+            "api_error" => ("api_error", anthropic_error),
+            "overloaded_error" => ("service_unavailable", "Service temporarily overloaded. Please try again later."),
+            _ => ("api_error", anthropic_error),
+        };
+        
+        OpenAIError {
+             error_type: openai_type.to_string(),
+             message: openai_message.to_string(),
+             param: None,
+             code: None,
+         }
+    }
+    
     /// Convert Claude message to OpenAI message
+    /// Handles all content types including tool use conversion as per guide
     fn convert_claude_message_to_openai(&self, claude_msg: ClaudeMessage) -> Result<OpenAIMessage> {
         let mut tool_calls = Vec::new();
         
@@ -328,10 +389,10 @@ impl ApiConverter {
                                 },
                             });
                         }
-                        ClaudeContentBlock::ToolUse { id, name, input } => {
-                            // Convert Claude tool use to OpenAI tool call
+                        ClaudeContentBlock::ToolUse { id: _, name, input } => {
+                            // Convert Claude ToolUse to OpenAI tool call format
                             tool_calls.push(OpenAIToolCall {
-                                id: Some(id),
+                                id: Some(format!("call_{}", self.generate_id())),
                                 tool_type: Some("function".to_string()),
                                 function: OpenAIFunctionCall {
                                     name: Some(name),
@@ -340,7 +401,7 @@ impl ApiConverter {
                             });
                         }
                         ClaudeContentBlock::ToolResult { content, .. } => {
-                            // Tool results are typically handled as text content
+                            // Tool results are handled as text content
                             openai_parts.push(OpenAIContentPart::Text { text: content });
                         }
                     }
@@ -396,6 +457,24 @@ impl ApiConverter {
             "overloaded_error" => "overloaded_error".to_string(),
             _ => "api_error".to_string(),
         }
+    }
+    
+    /// Safe parsing of tool arguments (handles empty strings as per conversion guide)
+    fn safe_parse_tool_arguments(&self, arguments: &str) -> serde_json::Value {
+        if arguments.is_empty() || arguments == "\"\"" {
+            return serde_json::json!({});
+        }
+        
+        serde_json::from_str(arguments)
+            .unwrap_or_else(|e| {
+                warn!("Failed to parse tool arguments: {}, using empty object", e);
+                serde_json::json!({})
+            })
+    }
+    
+    /// Generate a simple ID for Claude responses
+    fn generate_id(&self) -> String {
+        Uuid::new_v4().simple().to_string()
     }
 }
 
