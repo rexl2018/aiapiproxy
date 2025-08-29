@@ -1,0 +1,35 @@
+[Unit]
+Description=AI API Proxy Service - Claude to OpenAI API Converter
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=aiapiproxy
+Group=aiapiproxy
+WorkingDirectory=/opt/aiapiproxy
+EnvironmentFile=/opt/aiapiproxy/.env
+ExecStart=/opt/aiapiproxy/target/release/aiapiproxy
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/aiapiproxy/logs
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aiapiproxy
+
+[Install]
+WantedBy=multi-user.target

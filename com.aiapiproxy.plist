@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aiapiproxy</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/aiapiproxy</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>/usr/local/etc/aiapiproxy</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+        <key>LOG_FORMAT</key>
+        <string>json</string>
+    </dict>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    
+    <key>ProcessType</key>
+    <string>Background</string>
+    
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/aiapiproxy/stdout.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/aiapiproxy/stderr.log</string>
+    
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+    
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+        <key>NumberOfProcesses</key>
+        <integer>4096</integer>
+    </dict>
+    
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>32768</integer>
+        <key>NumberOfProcesses</key>
+        <integer>2048</integer>
+    </dict>
+    
+    <key>UserName</key>
+    <string>_aiapiproxy</string>
+    
+    <key>GroupName</key>
+    <string>_aiapiproxy</string>
+    
+    <key>InitGroups</key>
+    <true/>
+</dict>
+</plist>

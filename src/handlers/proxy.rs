@@ -32,7 +32,7 @@ pub async fn handle_messages(
     
     // 🔍 DEBUG: 记录完整的客户端请求内容
     if let Ok(request_json) = serde_json::to_string_pretty(&claude_request) {
-        info!("📥 Client Request Body:\n{}", request_json);
+        debug!("📥 Client Request Body:\n{}", request_json);
     }
     
     // Validate request
@@ -46,7 +46,7 @@ pub async fn handle_messages(
         Ok(req) => {
             // 🔍 DEBUG: 记录转换后的OpenAI请求内容
             if let Ok(openai_json) = serde_json::to_string_pretty(&req) {
-                info!("🔄 Converted OpenAI Request:\n{}", openai_json);
+                debug!("🔄 Converted OpenAI Request:\n{}", openai_json);
             }
             req
         },
@@ -80,7 +80,7 @@ async fn handle_normal_request(
         Ok(response) => {
             // 🔍 DEBUG: 记录OpenAI API响应内容
             if let Ok(response_json) = serde_json::to_string_pretty(&response) {
-                info!("📤 OpenAI API Response:\n{}", response_json);
+                debug!("📤 OpenAI API Response:\n{}", response_json);
             }
             response
         },
@@ -110,7 +110,7 @@ async fn handle_normal_request(
         Ok(response) => {
             // 🔍 DEBUG: 记录最终返回给客户端的Claude响应
             if let Ok(claude_json) = serde_json::to_string_pretty(&response) {
-                info!("📋 Final Claude Response:\n{}", claude_json);
+                debug!("📋 Final Claude Response:\n{}", claude_json);
             }
             response
         },
@@ -120,7 +120,7 @@ async fn handle_normal_request(
         }
     };
     
-    info!("Request processing completed");
+    debug!("Request processing completed");
     
     Ok(Json(claude_response).into_response())
 }
@@ -246,7 +246,7 @@ async fn handle_stream_request(
                 .text("keep-alive")
         );
     
-    info!("Starting streaming response transmission");
+    debug!("Starting streaming response transmission");
     
     Ok(sse.into_response())
 }
