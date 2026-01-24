@@ -1,34 +1,34 @@
 //! Claude API proxy handlers
 //! 
 //! Handles Claude API requests and converts them to OpenAI API calls
+//! Supports both legacy single-provider mode and multi-provider routing
 
 use crate::handlers::AppState;
 use crate::models::claude::*;
 use crate::models::openai::*;
-use tracing::warn;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
-    response::{Response, Sse, IntoResponse},
+    response::{IntoResponse, Response, Sse},
     Json,
 };
 use axum::response::sse::{Event, KeepAlive};
-// use futures::StreamExt; // 暂时注释掉未使用的导入
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, info};
-use uuid::Uuid;
+use tracing::{debug, error, warn};
 
 /// Handle Claude message requests
 /// 
 /// POST /v1/messages
+/// 
+/// Routes requests to providers based on model path (e.g., "openai/gpt-4o", "modelhub-sg1/gpt-5")
 pub async fn handle_messages(
     State(state): State<Arc<AppState>>,
     _headers: HeaderMap,
     Json(claude_request): Json<ClaudeRequest>,
 ) -> Result<Response<axum::body::Body>, StatusCode> {
-    debug!("Received Claude API request");
+    debug!("Received Claude API request for model: {}", claude_request.model);
     
     // 🔍 DEBUG: 记录完整的客户端请求内容
     if let Ok(request_json) = serde_json::to_string_pretty(&claude_request) {
@@ -43,8 +43,10 @@ pub async fn handle_messages(
     
     // Convert Claude request to OpenAI request
     let openai_request = match state.converter.convert_request(claude_request.clone()) {
-        Ok(req) => {
-            // 🔍 DEBUG: 记录转换后的OpenAI请求内容
+        Ok(mut req) => {
+            // Keep the original model path for routing
+            req.model = claude_request.model.clone();
+            
             if let Ok(openai_json) = serde_json::to_string_pretty(&req) {
                 debug!("🔄 Converted OpenAI Request:\n{}", openai_json);
             }
@@ -56,51 +58,52 @@ pub async fn handle_messages(
         }
     };
     
-    // Save original model name for response conversion
     let original_model = claude_request.model.clone();
+    let is_streaming = claude_request.stream.unwrap_or(false);
     
-    // Choose handling method based on whether it's a streaming request
-    if claude_request.stream.unwrap_or(false) {
+    if is_streaming {
         handle_stream_request(state, openai_request, original_model).await
     } else {
         handle_normal_request(state, openai_request, original_model).await
     }
 }
 
-/// Handle normal requests
+
+/// Categorize error message to appropriate error type and message
+fn categorize_error(error_message: &str) -> (&str, &str) {
+    if error_message.contains("TooManyRequests") || error_message.contains("RateLimitExceeded") {
+        ("rate_limit_error", "Rate limit exceeded. Please try again later.")
+    } else if error_message.contains("authentication") || error_message.contains("Invalid API key") {
+        ("authentication_error", "Invalid API key provided.")
+    } else if error_message.contains("insufficient_quota") || error_message.contains("quota") {
+        ("billing_error", "Insufficient quota or billing issue.")
+    } else if error_message.contains("not found") || error_message.contains("Model not found") {
+        ("not_found_error", "The requested model was not found.")
+    } else {
+        ("api_error", "External API request failed.")
+    }
+}
+
+/// Handle normal (non-streaming) requests
 async fn handle_normal_request(
     state: Arc<AppState>,
     openai_request: OpenAIRequest,
     original_model: String,
 ) -> Result<Response<axum::body::Body>, StatusCode> {
-    debug!("Handling normal request");
+    debug!("Handling normal request for model: {}", original_model);
     
-    // Call OpenAI API
-    let openai_response = match state.openai_client.chat_completions_with_retry(openai_request).await {
+    // Route and call provider API
+    let openai_response = match state.router.chat_complete(openai_request).await {
         Ok(response) => {
-            // 🔍 DEBUG: 记录OpenAI API响应内容
             if let Ok(response_json) = serde_json::to_string_pretty(&response) {
-                debug!("📤 OpenAI API Response:\n{}", response_json);
+                debug!("📤 Provider API Response:\n{}", response_json);
             }
             response
         },
         Err(e) => {
-            error!("OpenAI API request failed: {}", e);
-            
-            // Convert OpenAI API errors to Claude-compatible error responses
-            let error_message = e.to_string();
-            
-            // Check for specific error types
-            let (error_type, claude_message) = if error_message.contains("TooManyRequests") || error_message.contains("RateLimitExceeded") {
-                ("rate_limit_error", "Rate limit exceeded. Please try again later.")
-            } else if error_message.contains("authentication") || error_message.contains("Invalid API key") {
-                ("authentication_error", "Invalid API key provided.")
-            } else if error_message.contains("insufficient_quota") || error_message.contains("quota") {
-                ("billing_error", "Insufficient quota or billing issue.")
-            } else {
-                ("api_error", "External API request failed.")
-            };
-            
+            error!("Provider API request failed: {}", e);
+            let error_msg = e.to_string();
+            let (error_type, claude_message) = categorize_error(&error_msg);
             return Ok(create_error_response(error_type, claude_message).into_response());
         }
     };
@@ -108,7 +111,6 @@ async fn handle_normal_request(
     // Convert response format
     let claude_response = match state.converter.convert_response(openai_response, &original_model) {
         Ok(response) => {
-            // 🔍 DEBUG: 记录最终返回给客户端的Claude响应
             if let Ok(claude_json) = serde_json::to_string_pretty(&response) {
                 debug!("📋 Final Claude Response:\n{}", claude_json);
             }
@@ -121,7 +123,6 @@ async fn handle_normal_request(
     };
     
     debug!("Request processing completed");
-    
     Ok(Json(claude_response).into_response())
 }
 
@@ -131,41 +132,22 @@ async fn handle_stream_request(
     mut openai_request: OpenAIRequest,
     original_model: String,
 ) -> Result<Response<axum::body::Body>, StatusCode> {
-    debug!("Handling streaming request");
+    debug!("Handling streaming request for model: {}", original_model);
     
-    // Ensure it's a streaming request
     openai_request.stream = Some(true);
     
-    // Clone necessary components to avoid lifetime issues
-    let openai_client = state.openai_client.clone();
+    let router = state.router.clone();
     let converter = state.converter.clone();
-    
-    // Create converted stream
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, axum::Error>>(100);
     
-    // Handle streaming data conversion in background task
     tokio::spawn(async move {
-        // Get streaming response
-        let openai_stream = match openai_client.inner().chat_completions_stream(openai_request).await {
+        let stream = match router.chat_stream(openai_request).await {
             Ok(stream) => stream,
             Err(e) => {
-                error!("OpenAI streaming API request failed: {}", e);
+                error!("Provider streaming API request failed: {}", e);
+                let error_msg = e.to_string();
+                let (error_type, claude_message) = categorize_error(&error_msg);
                 
-                // Convert OpenAI API errors to Claude-compatible error events
-                let error_message = e.to_string();
-                
-                // Check for specific error types
-                let (error_type, claude_message) = if error_message.contains("TooManyRequests") || error_message.contains("RateLimitExceeded") {
-                    ("rate_limit_error", "Rate limit exceeded. Please try again later.")
-                } else if error_message.contains("authentication") || error_message.contains("Invalid API key") {
-                    ("authentication_error", "Invalid API key provided.")
-                } else if error_message.contains("insufficient_quota") || error_message.contains("quota") {
-                    ("billing_error", "Insufficient quota or billing issue.")
-                } else {
-                    ("api_error", "External API request failed.")
-                };
-                
-                // Create Claude-compatible error event
                 let claude_error = ClaudeStreamEvent::Error {
                     error: ClaudeError {
                         error_type: error_type.to_string(),
@@ -182,15 +164,14 @@ async fn handle_stream_request(
                 return;
             }
         };
-        let mut stream = Box::pin(openai_stream);
+        
+        let mut stream = Box::pin(stream);
         
         while let Some(chunk_result) = futures::StreamExt::next(&mut stream).await {
             match chunk_result {
                 Ok(openai_chunk) => {
-                    // Convert OpenAI streaming response to Claude format
                     match converter.convert_stream_chunk(openai_chunk, &original_model) {
                         Ok(claude_events) => {
-                            // Send each converted event
                             for event in claude_events {
                                 match serde_json::to_string(&event) {
                                     Ok(json) => {
@@ -202,10 +183,6 @@ async fn handle_stream_request(
                                     }
                                     Err(e) => {
                                         error!("Event serialization failed: {}", e);
-                                        let error_event = Event::default()
-                                            .event("error")
-                                            .data(format!("{{\"error\": \"{}\"}}", e));
-                                        let _ = tx.send(Ok(error_event)).await;
                                         return;
                                     }
                                 }
@@ -213,31 +190,21 @@ async fn handle_stream_request(
                         }
                         Err(e) => {
                             error!("Streaming response conversion failed: {}", e);
-                            let error_event = Event::default()
-                                .event("error")
-                                .data(format!("{{\"error\": \"{}\"}}", e));
-                            let _ = tx.send(Ok(error_event)).await;
                             return;
                         }
                     }
                 }
                 Err(e) => {
-                    error!("OpenAI streaming response error: {}", e);
-                    let error_event = Event::default()
-                        .event("error")
-                        .data(format!("{{\"error\": \"{}\"}}", e));
-                    let _ = tx.send(Ok(error_event)).await;
+                    error!("Provider streaming response error: {}", e);
                     return;
                 }
             }
         }
         
-        // Send end event
         let end_event = Event::default().event("done").data("{}");
         let _ = tx.send(Ok(end_event)).await;
     });
     
-    // Create SSE response
     let stream = ReceiverStream::new(rx);
     let sse = Sse::new(stream)
         .keep_alive(
@@ -247,7 +214,6 @@ async fn handle_stream_request(
         );
     
     debug!("Starting streaming response transmission");
-    
     Ok(sse.into_response())
 }
 

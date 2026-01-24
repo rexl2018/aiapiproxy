@@ -1,16 +1,16 @@
 # AI API Proxy
 
-A high-performance HTTP proxy server written in Rust for converting Claude API requests to OpenAI API format.
+A high-performance HTTP proxy server written in Rust for converting Claude API requests to multiple AI model providers.
 
 ## 🚀 Features
 
+- **Multi-Provider Support**: Route requests to OpenAI, ModelHub (Responses API & Gemini), and more
 - **API Format Conversion**: Complete support for Claude API to OpenAI API request/response conversion
 - **Streaming Response**: Support for Server-Sent Events streaming data transmission
-- **Model Mapping**: Configurable Claude model to OpenAI model mapping
-- **Authentication Security**: API key validation and security middleware
+- **Flexible Model Mapping**: Map Claude models to any provider/model via JSON configuration
+- **JSON Configuration**: Simple `aiapiproxy.json` file for all settings
 - **Error Handling**: Unified error format and Claude-compatible error responses
 - **Health Checks**: Multi-level service status monitoring
-- **Logging**: Structured logging and security event monitoring
 - **High Performance**: Asynchronous architecture based on Rust and Axum
 
 ## 📋 Tech Stack
@@ -38,10 +38,13 @@ A high-performance HTTP proxy server written in Rust for converting Claude API r
    cd aiapiproxy
    ```
 
-2. **Configure environment variables**
+2. **Configure the service**
    ```bash
-   cp .env.example .env
-   # Edit the .env file and set your OpenAI API key
+   # Copy the example configuration
+   cp aiapiproxy.example.json ~/.config/aiapiproxy/aiapiproxy.json
+   # Or place it in the project directory as aiapiproxy.json
+   
+   # Edit the configuration file with your API keys and providers
    ```
 
 3. **Start the service**
@@ -62,8 +65,10 @@ A high-performance HTTP proxy server written in Rust for converting Claude API r
 
 1. **Using Docker Compose (Recommended)**
    ```bash
-   # Set environment variables
-   export OPENAI_API_KEY=sk-your-api-key-here
+   # Prepare config file
+   mkdir -p ~/.config/aiapiproxy
+   cp aiapiproxy.example.json ~/.config/aiapiproxy/aiapiproxy.json
+   # Edit the config file with your settings
    
    # Start the service
    docker-compose up -d
@@ -74,11 +79,11 @@ A high-performance HTTP proxy server written in Rust for converting Claude API r
    # Build image
    docker build -t aiapiproxy .
    
-   # Run container
+   # Run container (mount config file)
    docker run -d \
      --name aiapiproxy \
      -p 8082:8082 \
-     -e OPENAI_API_KEY=sk-your-api-key-here \
+     -v ~/.config/aiapiproxy:/root/.config/aiapiproxy:ro \
      aiapiproxy
    ```
 
@@ -132,34 +137,72 @@ curl -X POST http://localhost:8082/v1/messages \
 
 ## ⚙️ Configuration
 
-### Environment Variables
+### Configuration File
 
-| Variable Name | Description | Default Value | Required |
-|---------------|-------------|---------------|----------|
-| `OPENAI_API_KEY` | OpenAI API Key | - | ✅ |
-| `SERVER_HOST` | Server listening address | `0.0.0.0` | ❌ |
-| `SERVER_PORT` | Server port | `8082` | ❌ |
-| `OPENAI_BASE_URL` | OpenAI API base URL | `https://api.openai.com/v1` | ❌ |
-| `CLAUDE_HAIKU_MODEL` | OpenAI model corresponding to Claude Haiku | `gpt-4o-mini` | ❌ |
-| `CLAUDE_SONNET_MODEL` | OpenAI model corresponding to Claude Sonnet | `gpt-4o` | ❌ |
-| `CLAUDE_OPUS_MODEL` | OpenAI model corresponding to Claude Opus | `gpt-4` | ❌ |
-| `REQUEST_TIMEOUT` | Request timeout (seconds) | `30` | ❌ |
-| `MAX_REQUEST_SIZE` | Maximum request size (bytes) | `10485760` | ❌ |
-| `MAX_CONCURRENT_REQUESTS` | Maximum concurrent requests | `100` | ❌ |
-| `RUST_LOG` | Log level | `info` | ❌ |
-| `LOG_FORMAT` | Log format (text/json) | `text` | ❌ |
-| `ALLOWED_ORIGINS` | Allowed CORS origins | `*` | ❌ |
-| `CORS_ENABLED` | Whether to enable CORS | `true` | ❌ |
+The service is configured via a JSON file. The config file is loaded from:
+1. `~/.config/aiapiproxy/aiapiproxy.json` (recommended)
+2. `./aiapiproxy.json` (current directory)
+
+See `aiapiproxy.example.json` for a complete example.
+
+### Configuration Structure
+
+```json
+{
+  "providers": {
+    "provider-name": {
+      "type": "openai | modelhub",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "your-api-key",
+      "options": {
+        "apiKeyParam": "ak",
+        "mode": "responses | gemini",
+        "headers": {}
+      },
+      "models": {
+        "model-id": {
+          "name": "actual-model-name",
+          "alias": "short-alias",
+          "maxTokens": 8192
+        }
+      }
+    }
+  },
+  "modelMapping": {
+    "claude-3-5-sonnet-20241022": "provider-name/model-id",
+    "sonnet": "provider-name/model-id"
+  }
+}
+```
+
+### Provider Types
+
+| Type | Description | Mode Options |
+|------|-------------|--------------|
+| `openai` | Standard OpenAI API | - |
+| `modelhub` | ModelHub proxy | `responses` (Responses API), `gemini` (Gemini via /v2/crawl) |
 
 ### Model Mapping
 
-The proxy server automatically maps Claude models to corresponding OpenAI models:
+The `modelMapping` section maps Claude model names to `provider/model` paths:
 
-| Claude Model | Default OpenAI Model | Description |
-|--------------|---------------------|-------------|
-| claude-3-haiku-* | gpt-4o-mini | Fast, economical model |
-| claude-3-sonnet-* | gpt-4o | Balanced performance and cost |
-| claude-3-opus-* | gpt-4 | Highest quality model |
+```json
+{
+  "modelMapping": {
+    "claude-3-5-sonnet-20241022": "modelhub-sg1/gpt-5-codex",
+    "claude-3-opus-20240229": "openai/gpt-4o",
+    "sonnet": "modelhub-sg1/gpt-5-codex"
+  }
+}
+```
+
+### Environment Variables
+
+| Variable Name | Description | Default Value |
+|---------------|-------------|---------------|
+| `RUST_LOG` | Log level | `info` |
+
+> **Note**: Server host and port are configured in the JSON configuration file, not via environment variables.
 
 ## 🏗️ Project Architecture
 
@@ -167,11 +210,12 @@ The proxy server automatically maps Claude models to corresponding OpenAI models
 src/
 ├── config/          # Configuration management
 │   ├── mod.rs
-│   └── settings.rs
+│   ├── file.rs      # JSON config loader
+│   └── settings.rs  # Server settings
 ├── handlers/        # HTTP handlers
 │   ├── health.rs    # Health checks
-│   ├── mod.rs
-│   └── proxy.rs     # Proxy request handling
+│   ├── mod.rs       # AppState & router setup
+│   └── proxy.rs     # Claude API proxy handling
 ├── middleware/      # Middleware
 │   ├── auth.rs      # Authentication middleware
 │   ├── logging.rs   # Logging middleware
@@ -180,9 +224,14 @@ src/
 │   ├── claude.rs    # Claude API models
 │   ├── mod.rs
 │   └── openai.rs    # OpenAI API models
+├── providers/       # Provider implementations
+│   ├── mod.rs       # Provider trait
+│   ├── openai.rs    # OpenAI provider
+│   └── modelhub.rs  # ModelHub provider (responses & gemini modes)
 ├── services/        # Service layer
 │   ├── client.rs    # HTTP client
-│   ├── converter.rs # API converter
+│   ├── converter.rs # Claude <-> OpenAI converter
+│   ├── router.rs    # Request router (model -> provider)
 │   └── mod.rs
 ├── utils/           # Utility modules
 │   ├── error.rs     # Error handling
@@ -247,18 +296,21 @@ The service supports structured logging, configurable via the `LOG_FORMAT` envir
 ### Common Issues
 
 1. **Service Startup Failure**
-   - Check if `OPENAI_API_KEY` is correctly set
+   - Check if `aiapiproxy.json` exists and is valid JSON
    - Confirm that port 8082 is not occupied
    - Check log output for detailed error information
 
 2. **API Request Failure**
    - Verify that the request format complies with Claude API specifications
-   - Check if the authentication header is correct
-   - Confirm that the OpenAI API key is valid and has sufficient balance
+   - Check if the model is correctly mapped in `modelMapping`
+   - Confirm that the provider API key is valid
 
-3. **Performance Issues**
-   - Adjust the `MAX_CONCURRENT_REQUESTS` parameter
-   - Check network latency and OpenAI API response time
+3. **Model Not Found Error**
+   - Add the Claude model to `modelMapping` section
+   - Verify the target `provider/model` path exists in `providers`
+
+4. **Performance Issues**
+   - Check network latency and provider API response time
    - Monitor memory and CPU usage
 
 ### Debug Mode
@@ -313,4 +365,4 @@ If you encounter problems or need help, please:
 
 ---
 
-**Note**: This project is only used for API format conversion and does not store or record any user data. All requests are forwarded directly to the OpenAI API.
+**Note**: This project is only used for API format conversion and does not store or record any user data. All requests are forwarded directly to the configured provider APIs.

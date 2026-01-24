@@ -164,11 +164,13 @@ pub struct OpenAIFunctionCall {
 /// OpenAI API response structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponse {
-    /// Response ID
+    /// Response ID (optional for compatibility with some providers)
+    #[serde(default)]
     pub id: String,
     /// Object type
     pub object: String,
-    /// Creation timestamp
+    /// Creation timestamp (optional for compatibility with some providers)
+    #[serde(default)]
     pub created: u64,
     /// Model used
     pub model: String,
@@ -184,7 +186,8 @@ pub struct OpenAIResponse {
 /// OpenAI choice
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIChoice {
-    /// Choice index
+    /// Choice index (optional for compatibility with some providers)
+    #[serde(default)]
     pub index: u32,
     /// Message content
     pub message: OpenAIMessage,

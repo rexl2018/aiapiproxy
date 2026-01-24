@@ -2,11 +2,35 @@
 
 use aiapiproxy::handlers::AppState;
 use aiapiproxy::config::settings::*;
-use aiapiproxy::services::{ApiConverter, RetryableOpenAIClient};
+use aiapiproxy::config::{AppConfig, ModelConfig, ProviderConfig};
+use aiapiproxy::services::{ApiConverter, Router};
 use aiapiproxy::models::claude::*;
 use aiapiproxy::models::openai::*;
 use std::sync::Arc;
 use std::collections::HashMap;
+
+/// Create test config
+fn create_test_config() -> AppConfig {
+    let mut models = HashMap::new();
+    models.insert("gpt-4o".to_string(), ModelConfig {
+        name: "gpt-4o".to_string(),
+        alias: None,
+        max_tokens: Some(8192),
+        temperature: None,
+        options: Default::default(),
+    });
+    
+    let mut providers = HashMap::new();
+    providers.insert("openai".to_string(), ProviderConfig {
+        provider_type: "openai".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        api_key: "test_key".to_string(),
+        options: Default::default(),
+        models,
+    });
+    
+    AppConfig { providers }
+}
 
 /// Create test application state
 fn create_test_app_state() -> Arc<AppState> {
@@ -43,13 +67,13 @@ fn create_test_app_state() -> Arc<AppState> {
         },
     };
     
-    let openai_client = RetryableOpenAIClient::new(settings.clone(), None).unwrap();
     let converter = ApiConverter::new(settings.clone());
+    let router = Arc::new(Router::new(create_test_config()).unwrap());
     
     Arc::new(AppState {
         settings,
-        openai_client,
         converter,
+        router,
     })
 }
 

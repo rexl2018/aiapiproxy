@@ -1,19 +1,22 @@
 //! AI API Proxy Library
 //! 
 //! Provides Claude API to OpenAI API conversion functionality
+//! with multi-provider routing support
 
 pub mod config;
 pub mod handlers;
 pub mod middleware;
 pub mod models;
+pub mod providers;
 pub mod services;
 pub mod utils;
 
 // Re-export common types
-pub use config::Settings;
+pub use config::{AppConfig, ModelConfig, ProviderConfig, Settings};
 pub use handlers::{create_router, AppState};
 pub use models::{claude, openai};
-pub use services::{ApiConverter, OpenAIClient, RetryableOpenAIClient};
+pub use providers::{ModelHubProvider, OpenAIProvider, Provider};
+pub use services::{ApiConverter, Router};
 pub use utils::error::{AppError, AppResult};
 
 /// Library version information

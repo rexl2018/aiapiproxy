@@ -5,7 +5,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::env;
 use tracing::warn;
 
 /// Main application configuration
@@ -94,20 +93,24 @@ pub struct LoggingConfig {
 
 impl Settings {
     /// Create a new configuration instance
+    /// 
+    /// Note: Provider-specific settings (API keys, base URLs) are now loaded from JSON config.
+    /// This only loads server, request, security, and logging settings from environment.
     pub fn new() -> Result<Self> {
         // Load .env file if it exists
         dotenv::dotenv().ok();
         
         let settings = Self {
             server: ServerConfig {
-                host: get_env_or_default("SERVER_HOST", "0.0.0.0"),
+                host: get_env_or_default("SERVER_HOST", "127.0.0.1"),
                 port: get_env_or_default("SERVER_PORT", "8082")
                     .parse()
                     .context("Invalid SERVER_PORT")?,
             },
+            // Legacy OpenAI config - kept for backward compatibility with converter
+            // Actual API keys are now in JSON config
             openai: OpenAIConfig {
-                api_key: std::env::var("OPENAI_API_KEY")
-                    .context("OPENAI_API_KEY environment variable is not set")?,
+                api_key: get_env_or_default("OPENAI_API_KEY", "unused"),
                 base_url: get_env_or_default("OPENAI_BASE_URL", "https://api.openai.com/v1"),
                 timeout: get_env_or_default("REQUEST_TIMEOUT", "30")
                     .parse()
@@ -116,6 +119,7 @@ impl Settings {
                     .parse()
                     .context("Invalid stream timeout")?,
             },
+            // Legacy model mapping - kept for backward compatibility with converter
             model_mapping: ModelMapping {
                 haiku: get_env_or_default("CLAUDE_HAIKU_MODEL", "gpt-4o-mini"),
                 sonnet: get_env_or_default("CLAUDE_SONNET_MODEL", "gpt-4o"),
@@ -167,48 +171,8 @@ impl Settings {
             return Err(anyhow::anyhow!("Port cannot be 0"));
         }
         
-        // Validate API key format - accept various formats for different providers
-        if self.openai.api_key.is_empty() {
-            anyhow::bail!("OPENAI_API_KEY cannot be empty");
-        }
-        
-        // Basic format validation - ensure no whitespace and minimum length
-        if self.openai.api_key.contains(char::is_whitespace) {
-            anyhow::bail!("Invalid API key format");
-        }
-        
-        // Validate API key format - should be at least 8 characters and follow expected patterns
-        if self.openai.api_key.len() < 8 {
-            anyhow::bail!("Invalid API key format");
-        }
-        
-        // Allow test keys and standard API key formats
-        if !self.openai.api_key.starts_with("sk-") && 
-           !self.openai.api_key.starts_with("ep-") && 
-           self.openai.api_key != "sk-test-key-12345678901234567890" &&
-           self.openai.api_key != "invalid-key" {
-            // For non-standard keys, just check they don't contain invalid characters
-            if self.openai.api_key.contains(char::is_whitespace) {
-                anyhow::bail!("Invalid API key format");
-            }
-        }
-        
-        // Special validation for obviously invalid keys
-        #[cfg(test)]
-        if self.openai.api_key == "invalid-key" {
-            return Err(anyhow::anyhow!("Invalid API key format"));
-        }
-        
-        // Validate URL format
-        if !self.openai.base_url.starts_with("http") && self.openai.base_url != "invalid-url" {
-            anyhow::bail!("Invalid URL format");
-        }
-        
-        // Special case for test
-        #[cfg(test)]
-        if self.openai.base_url == "invalid-url" {
-            return Err(anyhow::anyhow!("Invalid URL format"));
-        }
+        // Note: API key validation is now done in JSON config, not here
+        // The openai config is kept for backward compatibility with converter
         
         // Validate timeout values
         if self.openai.timeout == 0 || self.request.timeout == 0 {

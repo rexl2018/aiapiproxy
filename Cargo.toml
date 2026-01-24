@@ -50,7 +50,18 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 # 环境变量
 once_cell = "1.19"
 
+# 目录路径
+dirs = "5.0"
+
+# 异步 trait
+async-trait = "0.1"
+
+# Pin Box Stream
+pin-project-lite = "0.2"
+
 [dev-dependencies]
+# 临时文件（用于测试）
+tempfile = "3.10"
 # 测试框架
 tokio-test = "0.4"
 httpmock = "0.7"

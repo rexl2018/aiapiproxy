@@ -5,8 +5,8 @@
 pub mod health;
 pub mod proxy;
 
-use crate::config::Settings;
-use crate::services::{ApiConverter, RetryableOpenAIClient};
+use crate::config::{AppConfig, Settings};
+use crate::services::{ApiConverter, Router as ProviderRouter};
 use anyhow::Result;
 use axum::{routing::get, routing::post, Router};
 use std::sync::Arc;
@@ -15,28 +15,49 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tracing::info;
 
 /// Application state
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
+    /// Server settings (from env vars)
     pub settings: Settings,
-    pub openai_client: RetryableOpenAIClient,
+    /// API converter (Claude <-> OpenAI format conversion)
     pub converter: ApiConverter,
+    /// Provider router for multi-provider support
+    pub router: Arc<ProviderRouter>,
 }
 
-/// Create application router
-pub async fn create_router(settings: Settings) -> Result<Router> {
-    // Create OpenAI client
-    let openai_client = RetryableOpenAIClient::new(settings.clone(), None)?;
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("settings", &self.settings)
+            .field("converter", &"ApiConverter")
+            .field("router", &"ProviderRouter")
+            .finish()
+    }
+}
+
+/// Create application router with JSON config
+pub async fn create_router(settings: Settings, app_config: AppConfig) -> Result<Router> {
+    info!("Initializing with {} providers:", app_config.providers.len());
+    for (name, provider) in &app_config.providers {
+        let model_count = provider.models.len();
+        let mode = provider.options.mode.as_deref().unwrap_or("default");
+        info!("  - {}: type={}, mode={}, models={}", name, provider.provider_type, mode, model_count);
+    }
     
     // Create API converter
     let converter = ApiConverter::new(settings.clone());
     
+    // Create provider router
+    let router = Arc::new(ProviderRouter::new(app_config)?);
+    
     // Create application state
     let app_state = Arc::new(AppState {
         settings: settings.clone(),
-        openai_client,
         converter,
+        router,
     });
     
     // Create middleware stack

@@ -421,11 +421,11 @@ fn test_tool_calling_structures() {
     assert_eq!(tool.function.description, deserialized.function.description);
     
     let tool_call = OpenAIToolCall {
-        id: "call_123".to_string(),
-        tool_type: "function".to_string(),
+        id: Some("call_123".to_string()),
+        tool_type: Some("function".to_string()),
         function: OpenAIFunctionCall {
-            name: "get_weather".to_string(),
-            arguments: "{\"location\": \"San Francisco\"}".to_string(),
+            name: Some("get_weather".to_string()),
+            arguments: Some("{\"location\": \"San Francisco\"}".to_string()),
         },
     };
     

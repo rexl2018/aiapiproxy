@@ -6,7 +6,7 @@ use crate::handlers::AppState;
 use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::debug;
 
 /// Health check response
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,14 +78,12 @@ pub async fn health_check(State(_state): State<Arc<AppState>>) -> Json<HealthRes
 pub async fn readiness_check(State(state): State<Arc<AppState>>) -> Result<Json<HealthResponse>, StatusCode> {
     debug!("Executing readiness check");
     
-    // Check OpenAI API connection
-    let openai_status = match state.openai_client.inner().health_check().await {
-        Ok(true) => "connected".to_string(),
-        Ok(false) => "disconnected".to_string(),
-        Err(e) => {
-            error!("OpenAI API health check failed: {}", e);
-            "error".to_string()
-        }
+    // Check router status (providers configured)
+    let provider_count = state.router.list_models().len();
+    let provider_status = if provider_count > 0 {
+        format!("{} models available", provider_count)
+    } else {
+        "no models configured".to_string()
     };
     
     // Check configuration
@@ -98,14 +96,14 @@ pub async fn readiness_check(State(state): State<Arc<AppState>>) -> Result<Json<
     let memory_usage = get_memory_usage();
     
     let details = HealthDetails {
-        openai_api: openai_status.clone(),
+        openai_api: provider_status.clone(),
         config: config_status,
         uptime_seconds,
         memory_usage,
     };
     
     // Determine overall status
-    let overall_status = if openai_status == "connected" {
+    let overall_status = if provider_count > 0 {
         "ready".to_string()
     } else {
         "not_ready".to_string()
@@ -245,9 +243,35 @@ fn get_memory_usage() -> Option<MemoryUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::settings::*;
-    use crate::services::{ApiConverter, RetryableOpenAIClient};
+    use crate::config::{settings::*, AppConfig, ModelConfig, ProviderConfig};
+    use crate::services::{ApiConverter, Router};
+    use std::collections::HashMap;
     use std::sync::Arc;
+    
+    fn create_test_config() -> AppConfig {
+        let mut models = HashMap::new();
+        models.insert("gpt-4o".to_string(), ModelConfig {
+            name: "gpt-4o".to_string(),
+            alias: None,
+            max_tokens: Some(8192),
+            temperature: None,
+            options: Default::default(),
+        });
+        
+        let mut providers = HashMap::new();
+        providers.insert("openai".to_string(), ProviderConfig {
+            provider_type: "openai".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "test_key".to_string(),
+            options: Default::default(),
+            models,
+        });
+        
+        AppConfig { 
+            providers,
+            model_mapping: HashMap::new(),
+        }
+    }
     
     fn create_test_state() -> Arc<AppState> {
         let settings = Settings {
@@ -256,11 +280,11 @@ mod tests {
                 port: 8080,
             },
             openai: OpenAIConfig {
-            api_key: "test_key".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            timeout: 30,
-            stream_timeout: 300,
-        },
+                api_key: "test_key".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                timeout: 30,
+                stream_timeout: 300,
+            },
             model_mapping: ModelMapping {
                 haiku: "gpt-4o-mini".to_string(),
                 sonnet: "gpt-4o".to_string(),
@@ -283,13 +307,13 @@ mod tests {
             },
         };
         
-        let openai_client = RetryableOpenAIClient::new(settings.clone(), None).unwrap();
         let converter = ApiConverter::new(settings.clone());
+        let router = Arc::new(Router::new(create_test_config()).unwrap());
         
         Arc::new(AppState {
             settings,
-            openai_client,
             converter,
+            router,
         })
     }
     

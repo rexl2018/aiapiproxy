@@ -1,20 +1,20 @@
 //! AI API Proxy Server
 //! 
 //! HTTP proxy service that converts Claude API requests to OpenAI API format
+//! with multi-provider routing via JSON configuration
 
 use anyhow::{Context, Result};
-use std::net::SocketAddr;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
 mod handlers;
 mod middleware;
 mod models;
+mod providers;
 mod services;
 mod utils;
 
-use config::Settings;
+use config::{AppConfig, Settings};
 use handlers::create_router;
 
 #[tokio::main]
@@ -22,16 +22,21 @@ async fn main() -> Result<()> {
     // Initialize logging
     init_logging();
     
-    // Load configuration
-    let settings = Settings::new().context("Failed to load configuration")?;
-    info!("Configuration loaded successfully: {:?}", settings);
+    // Load provider configuration from JSON file (required)
+    let app_config = AppConfig::load_default()
+        .context("Failed to load provider configuration")?;
+    
+    info!("📁 Provider configuration loaded");
+    
+    // Load additional settings from environment (for logging, security, etc.)
+    let settings = Settings::new().context("Failed to load server settings")?;
+    info!("Server settings loaded");
     
     // Create router
-    let app = create_router(settings.clone()).await?;
+    let app = create_router(settings.clone(), app_config.clone()).await?;
     
-    // Build server address
-    let addr = format!("{}:{}", settings.server.host, settings.server.port);
-    info!("Server starting at: http://{}", addr);
+    // Build server address from JSON config
+    let addr = format!("{}:{}", app_config.server.host, app_config.server.port);
     
     // Start server
     let listener = tokio::net::TcpListener::bind(&addr).await?;
