@@ -90,6 +90,9 @@ pub enum ClaudeContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        /// Thought signature for Gemini thinking models (optional)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
     /// Tool result block
     #[serde(rename = "tool_result")]

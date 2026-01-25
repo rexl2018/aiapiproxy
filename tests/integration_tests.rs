@@ -2,7 +2,7 @@
 //!
 //! Test end-to-end functionality of the entire application
 
-use aiapiproxy::config::Settings;
+use aiapiproxy::config::{Settings, AppConfig, ModelConfig, ProviderConfig, ServerConfig};
 use aiapiproxy::handlers::create_router;
 use aiapiproxy::models::claude::*;
 use axum::{
@@ -11,6 +11,7 @@ use axum::{
 };
 use serde_json;
 use std::env;
+use std::collections::HashMap;
 use tower::ServiceExt;
 
 /// Setup test environment
@@ -30,10 +31,37 @@ fn create_test_settings() -> Settings {
     Settings::new().expect("Failed to create test settings")
 }
 
+/// Create test app config
+fn create_test_app_config() -> AppConfig {
+    let mut models = HashMap::new();
+    models.insert("gpt-4o".to_string(), ModelConfig {
+        name: "gpt-4o".to_string(),
+        alias: None,
+        max_tokens: Some(8192),
+        temperature: None,
+        options: Default::default(),
+    });
+    
+    let mut providers = HashMap::new();
+    providers.insert("openai".to_string(), ProviderConfig {
+        provider_type: "openai".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        api_key: "test_key".to_string(),
+        options: Default::default(),
+        models,
+    });
+    
+    AppConfig { 
+        server: ServerConfig::default(),
+        providers,
+        model_mapping: HashMap::new(),
+    }
+}
+
 #[tokio::test]
 async fn test_health_check_endpoint() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let request = Request::builder()
         .uri("/health")
@@ -56,7 +84,7 @@ async fn test_health_check_endpoint() {
 #[tokio::test]
 async fn test_readiness_check_endpoint() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let request = Request::builder()
         .uri("/health/ready")
@@ -72,7 +100,7 @@ async fn test_readiness_check_endpoint() {
 #[tokio::test]
 async fn test_liveness_check_endpoint() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let request = Request::builder()
         .uri("/health/live")
@@ -94,7 +122,7 @@ async fn test_liveness_check_endpoint() {
 #[tokio::test]
 async fn test_root_endpoint_redirect() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let request = Request::builder()
         .uri("/")
@@ -110,7 +138,7 @@ async fn test_root_endpoint_redirect() {
 #[tokio::test]
 async fn test_messages_endpoint_without_auth() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let claude_request = ClaudeRequest {
         model: "claude-3-sonnet".to_string(),
@@ -140,7 +168,7 @@ async fn test_messages_endpoint_without_auth() {
 #[tokio::test]
 async fn test_messages_endpoint_with_invalid_auth() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let claude_request = ClaudeRequest {
         model: "claude-3-sonnet".to_string(),
@@ -171,7 +199,7 @@ async fn test_messages_endpoint_with_invalid_auth() {
 #[tokio::test]
 async fn test_messages_endpoint_with_valid_auth_but_bad_request() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     // Send invalid request body
         let invalid_request = r#"{"model": "claude-3-sonnet"}"#; // Missing required fields
@@ -193,7 +221,7 @@ async fn test_messages_endpoint_with_valid_auth_but_bad_request() {
 #[tokio::test]
 async fn test_messages_endpoint_with_empty_messages() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let claude_request = ClaudeRequest {
         model: "claude-3-sonnet".to_string(),
@@ -221,7 +249,7 @@ async fn test_messages_endpoint_with_empty_messages() {
 #[tokio::test]
 async fn test_messages_endpoint_with_zero_max_tokens() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let claude_request = ClaudeRequest {
         model: "claude-3-sonnet".to_string(),
@@ -252,7 +280,7 @@ async fn test_messages_endpoint_with_zero_max_tokens() {
 #[tokio::test]
 async fn test_messages_endpoint_with_invalid_temperature() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let claude_request = ClaudeRequest {
         model: "claude-3-sonnet".to_string(),
@@ -284,7 +312,7 @@ async fn test_messages_endpoint_with_invalid_temperature() {
 #[tokio::test]
 async fn test_cors_headers() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let request = Request::builder()
         .method("OPTIONS")
@@ -309,7 +337,7 @@ async fn test_cors_headers() {
 #[tokio::test]
 async fn test_request_size_limit() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     // Create an oversized request
         let large_content = "x".repeat(2_000_000); // 2MB content
@@ -342,7 +370,7 @@ async fn test_request_size_limit() {
 #[tokio::test]
 async fn test_unsupported_method() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let request = Request::builder()
         .method("PUT")
@@ -359,7 +387,7 @@ async fn test_unsupported_method() {
 #[tokio::test]
 async fn test_not_found_endpoint() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let request = Request::builder()
         .uri("/nonexistent")
@@ -375,7 +403,7 @@ async fn test_not_found_endpoint() {
 #[tokio::test]
 async fn test_malformed_json() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let malformed_json = r#"{"model": "claude-3-sonnet", "max_tokens": }"#; // Malformed JSON syntax
     
@@ -396,7 +424,7 @@ async fn test_malformed_json() {
 #[tokio::test]
 async fn test_missing_content_type() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let claude_request = ClaudeRequest {
         model: "claude-3-sonnet".to_string(),
@@ -427,7 +455,7 @@ async fn test_missing_content_type() {
 #[tokio::test]
 async fn test_multimodal_request_structure() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let claude_request = ClaudeRequest {
         model: "claude-3-sonnet".to_string(),
@@ -470,7 +498,7 @@ async fn test_multimodal_request_structure() {
 #[tokio::test]
 async fn test_stream_request_structure() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     let claude_request = ClaudeRequest {
         model: "claude-3-sonnet".to_string(),
@@ -504,7 +532,7 @@ async fn test_stream_request_structure() {
 #[tokio::test]
 async fn test_health_endpoints_response_format() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     // Test basic health check
     let request = Request::builder()
@@ -523,7 +551,7 @@ async fn test_health_endpoints_response_format() {
     assert!(health_response["timestamp"].is_string());
     
     // Test liveness check
-    let app = create_router(create_test_settings()).await.expect("Failed to create router");
+    let app = create_router(create_test_settings(), create_test_app_config()).await.expect("Failed to create router");
     let request = Request::builder()
         .uri("/health/live")
         .body(Body::empty())
@@ -542,7 +570,7 @@ async fn test_health_endpoints_response_format() {
 #[tokio::test]
 async fn test_concurrent_requests() {
     let settings = create_test_settings();
-    let app = create_router(settings).await.expect("Failed to create router");
+    let app = create_router(settings, create_test_app_config()).await.expect("Failed to create router");
     
     // Create multiple concurrent health check requests
     let mut handles = vec![];

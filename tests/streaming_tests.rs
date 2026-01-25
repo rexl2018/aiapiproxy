@@ -29,7 +29,11 @@ fn create_test_config() -> AppConfig {
         models,
     });
     
-    AppConfig { providers }
+    AppConfig { 
+        server: aiapiproxy::config::ServerConfig::default(),
+        providers,
+        model_mapping: HashMap::new(),
+    }
 }
 
 /// Create test application state

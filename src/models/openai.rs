@@ -54,6 +54,10 @@ pub struct OpenAIRequest {
     /// Tool choice (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<serde_json::Value>,
+    /// Session ID (internal use, not sent to API)
+    /// Used by ModelHub for server-side caching
+    #[serde(skip)]
+    pub session_id: Option<String>,
 }
 
 /// OpenAI message structure
@@ -148,6 +152,12 @@ pub struct OpenAIToolCall {
     pub tool_type: Option<String>,
     /// Function call
     pub function: OpenAIFunctionCall,
+    /// Thought signature (for Gemini thinking models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// Extra content for provider-specific fields (Gemini thought_signature)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_content: Option<serde_json::Value>,
 }
 
 /// OpenAI function call structure
@@ -167,7 +177,8 @@ pub struct OpenAIResponse {
     /// Response ID (optional for compatibility with some providers)
     #[serde(default)]
     pub id: String,
-    /// Object type
+    /// Object type (optional for compatibility with Gemini via ModelHub)
+    #[serde(default)]
     pub object: String,
     /// Creation timestamp (optional for compatibility with some providers)
     #[serde(default)]
@@ -176,8 +187,9 @@ pub struct OpenAIResponse {
     pub model: String,
     /// Choice list
     pub choices: Vec<OpenAIChoice>,
-    /// Usage statistics
-    pub usage: OpenAIUsage,
+    /// Usage statistics (optional for compatibility with some providers)
+    #[serde(default)]
+    pub usage: Option<OpenAIUsage>,
     /// System fingerprint (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
@@ -202,21 +214,27 @@ pub struct OpenAIChoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIUsage {
     /// Prompt token count
+    #[serde(default)]
     pub prompt_tokens: u32,
-    /// Completion token count
+    /// Completion token count (optional for Gemini compatibility)
+    #[serde(default)]
     pub completion_tokens: u32,
     /// Total token count
+    #[serde(default)]
     pub total_tokens: u32,
 }
 
 /// OpenAI streaming response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIStreamResponse {
-    /// Response ID
+    /// Response ID (optional for compatibility with Gemini via ModelHub)
+    #[serde(default)]
     pub id: String,
-    /// Object type
+    /// Object type (optional for compatibility with Gemini via ModelHub)
+    #[serde(default)]
     pub object: String,
-    /// Creation timestamp
+    /// Creation timestamp (optional for compatibility with Gemini via ModelHub)
+    #[serde(default)]
     pub created: u64,
     /// Model used
     pub model: String,
@@ -230,7 +248,8 @@ pub struct OpenAIStreamResponse {
 /// OpenAI streaming choice
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIStreamChoice {
-    /// Choice index
+    /// Choice index (optional for compatibility with Gemini via ModelHub)
+    #[serde(default)]
     pub index: u32,
     /// Delta content
     pub delta: OpenAIStreamDelta,
@@ -326,6 +345,7 @@ impl Default for OpenAIRequest {
             seed: None,
             tools: None,
             tool_choice: None,
+            session_id: None,
         }
     }
 }

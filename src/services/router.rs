@@ -203,6 +203,7 @@ mod tests {
         });
         
         AppConfig { 
+            server: crate::config::ServerConfig::default(),
             providers,
             model_mapping: HashMap::new(),
         }

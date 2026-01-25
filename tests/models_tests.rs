@@ -232,6 +232,7 @@ fn test_openai_request_serialization() {
         seed: Some(42),
         tools: None,
         tool_choice: None,
+        session_id: None,
     };
     
     let json = serde_json::to_string(&request).unwrap();
@@ -316,11 +317,11 @@ fn test_openai_response_serialization() {
             logprobs: None,
             finish_reason: Some("stop".to_string()),
         }],
-        usage: OpenAIUsage {
+        usage: Some(OpenAIUsage {
             prompt_tokens: 9,
             completion_tokens: 12,
             total_tokens: 21,
-        },
+        }),
         system_fingerprint: Some("fp_123".to_string()),
     };
     
@@ -332,9 +333,9 @@ fn test_openai_response_serialization() {
     assert_eq!(response.created, deserialized.created);
     assert_eq!(response.model, deserialized.model);
     assert_eq!(response.system_fingerprint, deserialized.system_fingerprint);
-    assert_eq!(response.usage.prompt_tokens, deserialized.usage.prompt_tokens);
-    assert_eq!(response.usage.completion_tokens, deserialized.usage.completion_tokens);
-    assert_eq!(response.usage.total_tokens, deserialized.usage.total_tokens);
+    assert_eq!(response.usage.as_ref().unwrap().prompt_tokens, deserialized.usage.as_ref().unwrap().prompt_tokens);
+    assert_eq!(response.usage.as_ref().unwrap().completion_tokens, deserialized.usage.as_ref().unwrap().completion_tokens);
+    assert_eq!(response.usage.as_ref().unwrap().total_tokens, deserialized.usage.as_ref().unwrap().total_tokens);
 }
 
 #[test]
@@ -427,6 +428,8 @@ fn test_tool_calling_structures() {
             name: Some("get_weather".to_string()),
             arguments: Some("{\"location\": \"San Francisco\"}".to_string()),
         },
+        signature: None,
+        extra_content: None,
     };
     
     let json = serde_json::to_string(&tool_call).unwrap();
@@ -589,5 +592,5 @@ fn test_json_compatibility() {
     assert_eq!(parsed.id, "chatcmpl-123");
     assert_eq!(parsed.object, "chat.completion");
     assert_eq!(parsed.choices.len(), 1);
-    assert_eq!(parsed.usage.total_tokens, 21);
+    assert_eq!(parsed.usage.as_ref().unwrap().total_tokens, 21);
 }

@@ -160,11 +160,11 @@ fn test_convert_response() {
             logprobs: None,
             finish_reason: Some("stop".to_string()),
         }],
-        usage: OpenAIUsage {
+        usage: Some(OpenAIUsage {
             prompt_tokens: 15,
             completion_tokens: 10,
             total_tokens: 25,
-        },
+        }),
         system_fingerprint: None,
     };
     
@@ -371,11 +371,11 @@ fn test_finish_reason_mapping() {
                 logprobs: None,
                 finish_reason: Some(openai_reason.to_string()),
             }],
-            usage: OpenAIUsage {
+            usage: Some(OpenAIUsage {
                 prompt_tokens: 1,
                 completion_tokens: 1,
                 total_tokens: 2,
-            },
+            }),
             system_fingerprint: None,
         };
         
@@ -430,11 +430,11 @@ fn test_empty_response_handling() {
         created: 0,
         model: "gpt-4o".to_string(),
         choices: vec![], // Empty choices
-        usage: OpenAIUsage {
+        usage: Some(OpenAIUsage {
             prompt_tokens: 1,
             completion_tokens: 0,
             total_tokens: 1,
-        },
+        }),
         system_fingerprint: None,
     };
     

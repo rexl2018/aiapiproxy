@@ -5,6 +5,8 @@
 use super::{BoxStream, Provider};
 use crate::config::{ModelConfig, ProviderConfig};
 use crate::models::openai::*;
+use crate::utils::logging::{create_request_log_summary, VERBOSE_REQUEST_LOGGING};
+use crate::utils::thought_cache::{cache_thought_signature, get_cached_thought_signature};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -14,13 +16,65 @@ use std::time::Duration;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, warn};
 
+/// Inject cached thought_signatures into tool_calls in the request
+/// This is needed because Claude Code doesn't preserve our custom thought_signature field
+fn inject_cached_thought_signatures(request: &mut OpenAIRequest) {
+    for message in &mut request.messages {
+        if message.role == "assistant" {
+            if let Some(ref mut tool_calls) = message.tool_calls {
+                for tc in tool_calls.iter_mut() {
+                    // Skip if already has a signature
+                    if tc.signature.is_some() {
+                        continue;
+                    }
+                    
+                    // Try to get cached signature
+                    if let Some(id) = &tc.id {
+                        if let Some(sig) = get_cached_thought_signature(id) {
+                            debug!("💉 Injecting cached thought_signature for tool_call_id: {}", id);
+                            tc.signature = Some(sig.clone());
+                            tc.extra_content = Some(serde_json::json!({
+                                "google": {
+                                    "thought_signature": sig
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Create a filtered version of Responses API request for logging
+fn create_log_responses_request(request: &ResponsesApiRequest) -> serde_json::Value {
+    if VERBOSE_REQUEST_LOGGING {
+        serde_json::to_value(request).unwrap_or(serde_json::json!({"error": "failed to serialize"}))
+    } else {
+        serde_json::json!({
+            "model": request.model,
+            "max_output_tokens": request.max_output_tokens,
+            "temperature": request.temperature,
+            "stream": request.stream,
+            "input_count": request.input.len(),
+            "tools_count": request.tools.as_ref().map(|t| t.len()).unwrap_or(0),
+            "tools": "[omitted]",
+            "instructions": "[omitted]",
+        })
+    }
+}
+
 // ====== Responses API Structures ======
 
 /// OpenAI Responses API Request format
 #[derive(Debug, Serialize)]
 struct ResponsesApiRequest {
     model: String,
-    input: Vec<ResponsesInputMessage>,
+    /// Input can contain various types:
+    /// - Messages: { role: "user"|"assistant", content: [...] }
+    /// - Function calls: { type: "function_call", call_id, name, arguments }
+    /// - Function results: { type: "function_call_output", call_id, output }
+    input: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,7 +202,12 @@ impl ModelHubProvider {
     }
     
     /// Add ModelHub-specific headers
-    fn add_modelhub_headers(&self, builder: reqwest::RequestBuilder, provider_config: &ProviderConfig) -> reqwest::RequestBuilder {
+    fn add_modelhub_headers(
+        &self, 
+        builder: reqwest::RequestBuilder, 
+        provider_config: &ProviderConfig,
+        session_id: Option<&str>,
+    ) -> reqwest::RequestBuilder {
         let mut builder = builder
             .header("HTTP-Referer", "https://aiapiproxy.local")
             .header("X-Title", "AIAPIProxy");
@@ -156,6 +215,14 @@ impl ModelHubProvider {
         // Add custom headers from config
         for (key, value) in &provider_config.options.headers {
             builder = builder.header(key, value);
+        }
+        
+        // Add session_id in extra header for ModelHub server-side caching
+        // Format: {"session_id": "XX"}
+        if let Some(sid) = session_id {
+            let extra_value = serde_json::json!({ "session_id": sid }).to_string();
+            debug!("📎 Adding extra header for ModelHub: {}", extra_value);
+            builder = builder.header("extra", extra_value);
         }
         
         builder
@@ -176,7 +243,8 @@ impl ModelHubProvider {
         // Convert OpenAI request to Responses API format
         let responses_request = self.convert_to_responses_api(&request, model_config)?;
         
-        if let Ok(req_json) = serde_json::to_string_pretty(&responses_request) {
+        let log_request = create_log_responses_request(&responses_request);
+        if let Ok(req_json) = serde_json::to_string_pretty(&log_request) {
             debug!("📤 Responses API Request:\n{}", req_json);
         }
         
@@ -187,7 +255,7 @@ impl ModelHubProvider {
             .header("Content-Type", "application/json")
             .json(&responses_request);
         
-        let response = self.add_modelhub_headers(builder, provider_config)
+        let response = self.add_modelhub_headers(builder, provider_config, request.session_id.as_deref())
             .send()
             .await
             .context("Failed to send request")?;
@@ -214,11 +282,16 @@ impl ModelHubProvider {
     /// Convert OpenAI request to Responses API format
     fn convert_to_responses_api(&self, request: &OpenAIRequest, model_config: &ModelConfig) -> Result<ResponsesApiRequest> {
         // Convert messages to input format
-        let mut input: Vec<ResponsesInputMessage> = Vec::new();
+        // Note: Responses API uses a different structure than chat completions
+        // - User messages use role: "user" with content blocks
+        // - Assistant messages use role: "assistant" with content blocks  
+        // - Tool calls are separate "function_call" items
+        // - Tool results are "function_call_output" items (NOT role: "tool")
+        let mut input: Vec<Value> = Vec::new();
         let mut system_instructions: Option<String> = None;
         
         for msg in &request.messages {
-            let role = msg.role.clone();
+            let role = msg.role.as_str();
             
             // Extract system message as instructions
             if role == "system" {
@@ -228,37 +301,94 @@ impl ModelHubProvider {
                 continue;
             }
             
-            // Convert content to Value
-            let content = if let Some(c) = &msg.content {
-                match c {
-                    OpenAIContent::Text(text) => Value::String(text.clone()),
-                    OpenAIContent::Array(parts) => {
-                        let json_parts: Vec<Value> = parts.iter().map(|p| {
-                            match p {
-                                OpenAIContentPart::Text { text } => {
-                                    serde_json::json!({ "type": "input_text", "text": text })
-                                },
-                                OpenAIContentPart::ImageUrl { image_url } => {
-                                    serde_json::json!({
-                                        "type": "input_image",
-                                        "image_url": image_url.url
-                                    })
-                                },
-                            }
-                        }).collect();
-                        Value::Array(json_parts)
+            // Handle tool role -> function_call_output
+            if role == "tool" {
+                if let Some(tool_call_id) = &msg.tool_call_id {
+                    let output = msg.content.as_ref()
+                        .map(|c| c.extract_text())
+                        .unwrap_or_default();
+                    input.push(serde_json::json!({
+                        "type": "function_call_output",
+                        "call_id": tool_call_id,
+                        "output": output
+                    }));
+                }
+                continue;
+            }
+            
+            // Handle assistant with tool_calls -> function_call items
+            if role == "assistant" {
+                if let Some(tool_calls) = &msg.tool_calls {
+                    for tc in tool_calls {
+                        if let Some(id) = &tc.id {
+                            input.push(serde_json::json!({
+                                "type": "function_call",
+                                "call_id": id,
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments.clone().unwrap_or_default()
+                            }));
+                        }
                     }
                 }
-            } else {
-                Value::String(String::new())
-            };
+                // If assistant has text content, also add it
+                if let Some(content) = &msg.content {
+                    let text = content.extract_text();
+                    if !text.is_empty() {
+                        input.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": [{ "type": "output_text", "text": text }]
+                        }));
+                    }
+                }
+                continue;
+            }
             
-            input.push(ResponsesInputMessage { role, content });
+            // Handle user messages
+            if role == "user" {
+                let content = if let Some(c) = &msg.content {
+                    match c {
+                        OpenAIContent::Text(text) => {
+                            vec![serde_json::json!({ "type": "input_text", "text": text })]
+                        },
+                        OpenAIContent::Array(parts) => {
+                            parts.iter().map(|p| {
+                                match p {
+                                    OpenAIContentPart::Text { text } => {
+                                        serde_json::json!({ "type": "input_text", "text": text })
+                                    },
+                                    OpenAIContentPart::ImageUrl { image_url } => {
+                                        serde_json::json!({
+                                            "type": "input_image",
+                                            "image_url": image_url.url
+                                        })
+                                    },
+                                }
+                            }).collect()
+                        }
+                    }
+                } else {
+                    vec![serde_json::json!({ "type": "input_text", "text": "" })]
+                };
+                
+                input.push(serde_json::json!({
+                    "role": "user",
+                    "content": content
+                }));
+            }
         }
         
-        // Convert tools if present
+        // Convert tools to Responses API format
+        // OpenAI chat format: { type: "function", function: { name, description, parameters } }
+        // Responses API format: { type: "function", name, description, parameters }
         let tools = request.tools.as_ref().map(|t| {
-            t.iter().map(|tool| serde_json::to_value(tool).unwrap_or_default()).collect()
+            t.iter().map(|tool| {
+                serde_json::json!({
+                    "type": "function",
+                    "name": tool.function.name,
+                    "description": tool.function.description,
+                    "parameters": tool.function.parameters
+                })
+            }).collect()
         });
         
         // Ensure max_output_tokens >= 16
@@ -304,6 +434,8 @@ impl ModelHubProvider {
                                 name: Some(name.clone()),
                                 arguments: Some(arguments.clone()),
                             },
+                            signature: None,
+                            extra_content: None,
                         });
                     }
                 },
@@ -333,10 +465,6 @@ impl ModelHubProvider {
             prompt_tokens: u.input_tokens,
             completion_tokens: u.output_tokens,
             total_tokens: u.total_tokens.unwrap_or(u.input_tokens + u.output_tokens),
-        }).unwrap_or(OpenAIUsage {
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
         });
         
         OpenAIResponse {
@@ -370,7 +498,7 @@ impl ModelHubProvider {
             .header("Accept", "text/event-stream")
             .json(&responses_request);
         
-        let response = self.add_modelhub_headers(builder, provider_config)
+        let response = self.add_modelhub_headers(builder, provider_config, request.session_id.as_deref())
             .send()
             .await
             .context("Failed to send streaming request")?;
@@ -480,14 +608,27 @@ impl ModelHubProvider {
     ) -> Result<OpenAIResponse> {
         debug!("ModelHub: Using Gemini mode (OpenAI chat format to /v2/crawl)");
         
+        // Log original max_tokens from request
+        let original_max_tokens = request.max_tokens;
+        
         // Update model name and apply defaults
         request.model = model_config.name.clone();
-        if request.max_tokens.is_none() {
-            request.max_tokens = model_config.max_tokens;
-        }
+        
+        // Use the maximum of request and config max_tokens to avoid too-small limits
+        // Claude Code sometimes sends max_tokens=1 which causes immediate truncation
+        request.max_tokens = match (request.max_tokens, model_config.max_tokens) {
+            (Some(req), Some(cfg)) => Some(req.max(cfg)),
+            (Some(req), None) => Some(req),
+            (None, Some(cfg)) => Some(cfg),
+            (None, None) => Some(8192), // Default fallback
+        };
+        
         if request.temperature.is_none() {
             request.temperature = model_config.temperature;
         }
+        
+        debug!("📊 max_tokens: original={:?}, config={:?}, final={:?}",
+               original_max_tokens, model_config.max_tokens, request.max_tokens);
         
         // Sanitize tools if present (Gemini rejects some JSON Schema features)
         if let Some(ref mut tools) = request.tools {
@@ -496,18 +637,23 @@ impl ModelHubProvider {
             }
         }
         
-        if let Ok(req_json) = serde_json::to_string_pretty(&request) {
-            debug!("📤 Gemini Mode Request (OpenAI format):\n{}", req_json);
+        // Inject cached thought_signatures into tool_calls
+        inject_cached_thought_signatures(&mut request);
+        
+        let log_request = create_request_log_summary(&request);
+        if let Ok(req_json) = serde_json::to_string_pretty(&log_request) {
+            debug!("📤 Gemini Mode Request:\n{}", req_json);
         }
         
         let url = self.build_url(provider_config, "/v2/crawl");
+        let session_id = request.session_id.clone();
         
         let builder = self.client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&request);
         
-        let response = self.add_modelhub_headers(builder, provider_config)
+        let response = self.add_modelhub_headers(builder, provider_config, session_id.as_deref())
             .send()
             .await
             .context("Failed to send Gemini request")?;
@@ -515,11 +661,46 @@ impl ModelHubProvider {
         let status = response.status();
         
         if status.is_success() {
-            // Response is in OpenAI chat format
-            let openai_response: OpenAIResponse = response
-                .json()
+            // Get response as text first for debugging
+            let response_text = response
+                .text()
                 .await
-                .context("Failed to parse Gemini response (OpenAI format)")?;
+                .context("Failed to read Gemini response body")?;
+            
+            debug!("📥 Gemini Mode Raw Response:\n{}", &response_text);
+            
+            // Try to parse as OpenAI format
+            let openai_response: OpenAIResponse = serde_json::from_str(&response_text)
+                .with_context(|| {
+                    error!("Failed to parse Gemini response. Raw response:\n{}", &response_text);
+                    format!("Failed to parse Gemini response (OpenAI format). Response: {}", 
+                            if response_text.len() > 500 { &response_text[..500] } else { &response_text })
+                })?;
+            
+            // Debug: log tool_calls with thought_signature info and cache signatures
+            if let Some(choice) = openai_response.choices.first() {
+                if let Some(tool_calls) = &choice.message.tool_calls {
+                    for tc in tool_calls {
+                        // Try to extract thought_signature from multiple possible locations
+                        let signature: Option<String> = tc.signature.clone()
+                            .or_else(|| {
+                                tc.extra_content.as_ref()
+                                    .and_then(|ec| ec.get("google"))
+                                    .and_then(|g| g.get("thought_signature"))
+                                    .and_then(|ts| ts.as_str())
+                                    .map(|s| s.to_string())
+                            });
+                        
+                        debug!("🔧 Tool call: id={:?}, signature={:?}, extra_content={:?}",
+                               tc.id, signature, tc.extra_content);
+                        
+                        // Cache the thought_signature if present
+                        if let (Some(id), Some(sig)) = (&tc.id, &signature) {
+                            cache_thought_signature(id, sig);
+                        }
+                    }
+                }
+            }
             
             debug!("ModelHub Gemini mode request completed successfully");
             Ok(openai_response)
@@ -538,15 +719,28 @@ impl ModelHubProvider {
     ) -> Result<BoxStream<'static, OpenAIStreamResponse>> {
         debug!("ModelHub: Using Gemini streaming mode (OpenAI chat format to /v2/crawl)");
         
+        // Log original max_tokens from request
+        let original_max_tokens = request.max_tokens;
+        
         // Update model name and apply defaults
         request.model = model_config.name.clone();
         request.stream = Some(true);
-        if request.max_tokens.is_none() {
-            request.max_tokens = model_config.max_tokens;
-        }
+        
+        // Use the maximum of request and config max_tokens to avoid too-small limits
+        // Claude Code sometimes sends max_tokens=1 which causes immediate truncation
+        request.max_tokens = match (request.max_tokens, model_config.max_tokens) {
+            (Some(req), Some(cfg)) => Some(req.max(cfg)),
+            (Some(req), None) => Some(req),
+            (None, Some(cfg)) => Some(cfg),
+            (None, None) => Some(8192), // Default fallback
+        };
+        
         if request.temperature.is_none() {
             request.temperature = model_config.temperature;
         }
+        
+        debug!("📊 max_tokens: original={:?}, config={:?}, final={:?}",
+               original_max_tokens, model_config.max_tokens, request.max_tokens);
         
         // Sanitize tools if present (Gemini rejects some JSON Schema features)
         if let Some(ref mut tools) = request.tools {
@@ -555,7 +749,16 @@ impl ModelHubProvider {
             }
         }
         
+        // Inject cached thought_signatures into tool_calls
+        inject_cached_thought_signatures(&mut request);
+        
+        let log_request = create_request_log_summary(&request);
+        if let Ok(req_json) = serde_json::to_string_pretty(&log_request) {
+            debug!("📤 Gemini Streaming Request:\n{}", req_json);
+        }
+        
         let url = self.build_url(provider_config, "/v2/crawl");
+        let session_id = request.session_id.clone();
         
         let builder = self.stream_client
             .post(&url)
@@ -563,7 +766,7 @@ impl ModelHubProvider {
             .header("Accept", "text/event-stream")
             .json(&request);
         
-        let response = self.add_modelhub_headers(builder, provider_config)
+        let response = self.add_modelhub_headers(builder, provider_config, session_id.as_deref())
             .send()
             .await
             .context("Failed to send Gemini streaming request")?;
@@ -753,6 +956,8 @@ impl ModelHubProvider {
                                         name: Some(function_call.name.clone()),
                                         arguments: Some(function_call.args.to_string()),
                                     },
+                                    signature: None, // TODO: extract from Gemini response if present
+                                    extra_content: None,
                                 });
                                 finish_reason = "tool_calls".to_string();
                             }
@@ -811,11 +1016,11 @@ impl ModelHubProvider {
                 logprobs: None,
                 finish_reason: Some(finish_reason),
             }],
-            usage: OpenAIUsage {
+            usage: Some(OpenAIUsage {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens: prompt_tokens + completion_tokens,
-            },
+            }),
             system_fingerprint: None,
         })
     }
@@ -842,6 +1047,8 @@ impl ModelHubProvider {
                                         name: Some(function_call.name.clone()),
                                         arguments: Some(function_call.args.to_string()),
                                     },
+                                    signature: None, // TODO: extract from Gemini response if present
+                                    extra_content: None,
                                 }]);
                                 finish_reason = Some("tool_calls".to_string());
                             }
@@ -1084,16 +1291,60 @@ pub fn sanitize_tool_schema(schema: Option<serde_json::Value>) -> Option<serde_j
 fn sanitize_schema_value(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(mut map) => {
-            // Remove unsupported schema keywords
-            map.remove("anyOf");
-            map.remove("allOf");
-            map.remove("oneOf");
+            // Remove unsupported schema keywords that Gemini rejects
+            // Reference: https://ai.google.dev/gemini-api/docs/function-calling
+            
+            // JSON Schema meta keywords
+            map.remove("$schema");
+            map.remove("$id");
             map.remove("$ref");
             map.remove("$defs");
             map.remove("definitions");
+            map.remove("$comment");
             
-            // If we have anyOf/allOf/oneOf, try to use the first alternative
-            // This is handled by removing them above
+            // Composition keywords (Gemini doesn't support these)
+            map.remove("anyOf");
+            map.remove("allOf");
+            map.remove("oneOf");
+            map.remove("not");
+            map.remove("if");
+            map.remove("then");
+            map.remove("else");
+            
+            // Numeric validation keywords not supported by Gemini
+            map.remove("exclusiveMinimum");
+            map.remove("exclusiveMaximum");
+            map.remove("multipleOf");
+            
+            // Object validation keywords not supported by Gemini
+            map.remove("propertyNames");
+            map.remove("patternProperties");
+            map.remove("unevaluatedProperties");
+            map.remove("dependentSchemas");
+            map.remove("dependentRequired");
+            map.remove("minProperties");
+            map.remove("maxProperties");
+            
+            // Array validation keywords not supported by Gemini
+            map.remove("contains");
+            map.remove("minContains");
+            map.remove("maxContains");
+            map.remove("unevaluatedItems");
+            map.remove("prefixItems");
+            map.remove("uniqueItems");
+            
+            // String validation keywords that may not be supported
+            map.remove("contentEncoding");
+            map.remove("contentMediaType");
+            map.remove("contentSchema");
+            
+            // Other keywords
+            map.remove("const");
+            map.remove("deprecated");
+            map.remove("readOnly");
+            map.remove("writeOnly");
+            map.remove("examples");
+            map.remove("default");
             
             // Recursively sanitize nested objects
             let sanitized: serde_json::Map<String, serde_json::Value> = map
@@ -1155,16 +1406,23 @@ mod tests {
     #[test]
     fn test_sanitize_tool_schema() {
         let schema = serde_json::json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "properties": {
                 "name": {
-                    "type": "string"
+                    "type": "string",
+                    "propertyNames": {"pattern": "^[a-z]+$"}
                 },
                 "value": {
                     "anyOf": [
                         {"type": "string"},
                         {"type": "number"}
                     ]
+                },
+                "count": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "exclusiveMaximum": 100
                 }
             },
             "allOf": [
@@ -1174,14 +1432,25 @@ mod tests {
         
         let sanitized = sanitize_tool_schema(Some(schema)).unwrap();
         
+        // Check top-level unsupported fields are removed
+        assert!(sanitized.get("$schema").is_none());
         assert!(sanitized.get("anyOf").is_none());
         assert!(sanitized.get("allOf").is_none());
         assert!(sanitized.get("properties").is_some());
         
-        // Check nested anyOf is also removed
+        // Check nested fields are also removed
         let props = sanitized.get("properties").unwrap();
         let value_prop = props.get("value").unwrap();
         assert!(value_prop.get("anyOf").is_none());
+        
+        let name_prop = props.get("name").unwrap();
+        assert!(name_prop.get("propertyNames").is_none());
+        
+        let count_prop = props.get("count").unwrap();
+        assert!(count_prop.get("exclusiveMinimum").is_none());
+        assert!(count_prop.get("exclusiveMaximum").is_none());
+        // But type should still be there
+        assert_eq!(count_prop.get("type").unwrap(), "integer");
     }
     
     #[test]

@@ -11,6 +11,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Config file path
+CONFIG_FILE="${HOME}/.config/aiapiproxy/aiapiproxy.json"
+
 # Print colored messages
 print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -28,29 +31,28 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Load environment variables from .env file
-load_env() {
-    # Load .env file (if exists)
-    if [ -f ".env" ]; then
-        print_info "Loading .env configuration file"
-        export $(cat .env | grep -v '^#' | xargs)
-    else
-        print_warning ".env file does not exist, using environment variables"
-    fi
-}
-
-# Check environment variables
-check_env() {
-    print_info "Checking environment variables..."
+# Check configuration file
+check_config() {
+    print_info "Checking configuration..."
     
-    if [ -z "$OPENAI_API_KEY" ]; then
-        print_error "OPENAI_API_KEY environment variable not set"
-        print_info "Please set your OpenAI API key:"
-        print_info "export OPENAI_API_KEY=sk-your-api-key-here"
+    if [ ! -f "$CONFIG_FILE" ]; then
+        print_error "Configuration file not found: $CONFIG_FILE"
+        print_info "Please create the configuration file."
+        print_info "You can copy the example file:"
+        print_info "  mkdir -p ~/.config/aiapiproxy"
+        print_info "  cp aiapiproxy.example.json ~/.config/aiapiproxy/aiapiproxy.json"
         exit 1
     fi
     
-    print_success "Environment variable check passed"
+    # Check if config is valid JSON
+    if ! python3 -c "import json; json.load(open('$CONFIG_FILE'))" 2>/dev/null; then
+        if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
+            print_error "Configuration file is not valid JSON"
+            exit 1
+        fi
+    fi
+    
+    print_success "Configuration file found: $CONFIG_FILE"
 }
 
 # Check dependencies
@@ -70,7 +72,7 @@ check_dependencies() {
 build_project() {
     print_info "Building project..."
     
-    if [ "$1" = "--release" ]; then
+    if [ "$1" = "--release" ] || [ "$1" = "-r" ]; then
         cargo build --release
         print_success "Release build completed"
     else
@@ -83,17 +85,20 @@ build_project() {
 run_project() {
     print_info "Starting AI API Proxy..."
     
-    # Set default values
-    export SERVER_HOST=${SERVER_HOST:-"0.0.0.0"}
-    export SERVER_PORT=${SERVER_PORT:-"8082"}
+    # Set log level (default: info, use debug for more details)
     export RUST_LOG=${RUST_LOG:-"info"}
     
-    print_info "Server configuration:"
-    print_info "  Host: $SERVER_HOST"
-    print_info "  Port: $SERVER_PORT"
-    print_info "  Log level: $RUST_LOG"
+    # Extract host and port from config for display
+    if command -v jq &> /dev/null; then
+        HOST=$(jq -r '.server.host // "127.0.0.1"' "$CONFIG_FILE")
+        PORT=$(jq -r '.server.port // 8082' "$CONFIG_FILE")
+        print_info "Server will listen on: $HOST:$PORT"
+    fi
     
-    if [ "$1" = "--release" ]; then
+    print_info "Log level: $RUST_LOG"
+    print_info "Config file: $CONFIG_FILE"
+    
+    if [ "$1" = "--release" ] || [ "$1" = "-r" ]; then
         ./target/release/aiapiproxy
     else
         cargo run
@@ -110,17 +115,19 @@ show_help() {
     echo "  --help, -h        Show this help information"
     echo "  --release, -r     Build and run in release mode"
     echo "  --build-only, -b  Build only, do not run"
-    echo "  --check, -c       Check environment only, do not build or run"
+    echo "  --check, -c       Check configuration and dependencies only"
+    echo "  --debug, -d       Run with debug logging"
+    echo ""
+    echo "Configuration:"
+    echo "  Config file: ~/.config/aiapiproxy/aiapiproxy.json"
     echo ""
     echo "Environment variables:"
-    echo "  OPENAI_API_KEY    OpenAI API key (required)"
-    echo "  SERVER_HOST       Server host (default: 0.0.0.0)"
-    echo "  SERVER_PORT       Server port (default: 8082)"
-    echo "  RUST_LOG          Log level (default: info)"
+    echo "  RUST_LOG          Log level (default: info, use 'debug' for verbose)"
     echo ""
     echo "Examples:"
     echo "  $0                # Start in development mode"
     echo "  $0 --release      # Start in production mode"
+    echo "  $0 --debug        # Start with debug logging"
     echo "  $0 --build-only   # Build project only"
 }
 
@@ -134,31 +141,33 @@ main() {
             exit 0
             ;;
         --check|-c)
-            load_env
-            check_env
             check_dependencies
-            print_success "Environment check completed"
+            check_config
+            print_success "All checks passed"
             exit 0
             ;;
         --build-only|-b)
-            load_env
-            check_env
             check_dependencies
-            build_project "$1"
+            build_project "$2"
             print_success "Build completed"
             exit 0
             ;;
-        --release|-r)
-            load_env
-            check_env
+        --debug|-d)
+            export RUST_LOG="debug"
             check_dependencies
+            check_config
+            build_project
+            run_project
+            ;;
+        --release|-r)
+            check_dependencies
+            check_config
             build_project "$1"
             run_project "$1"
             ;;
         "")
-            load_env
-            check_env
             check_dependencies
+            check_config
             build_project
             run_project
             ;;

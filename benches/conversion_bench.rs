@@ -127,11 +127,11 @@ fn create_openai_response() -> OpenAIResponse {
             logprobs: None,
             finish_reason: Some("stop".to_string()),
         }],
-        usage: OpenAIUsage {
+        usage: Some(OpenAIUsage {
             prompt_tokens: 15,
             completion_tokens: 10,
             total_tokens: 25,
-        },
+        }),
         system_fingerprint: None,
     }
 }

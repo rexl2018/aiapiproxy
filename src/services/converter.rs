@@ -6,6 +6,7 @@ use crate::config::Settings;
 use crate::models::{
     claude::*, openai::*,
 };
+use crate::utils::thought_cache::cache_thought_signature;
 use anyhow::{Context, Result};
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -62,9 +63,10 @@ impl ApiConverter {
         }
         
         // Convert Claude messages to OpenAI messages
+        // This may expand one Claude message into multiple OpenAI messages (e.g., for tool results)
         for claude_msg in claude_req.messages {
-            let openai_msg = self.convert_claude_message_to_openai(claude_msg)?;
-            openai_messages.push(openai_msg);
+            let converted_msgs = self.convert_claude_message_to_openai_messages(claude_msg)?;
+            openai_messages.extend(converted_msgs);
         }
         
         // Extract user ID from metadata if available (参考claude-code-proxy项目的做法)
@@ -74,11 +76,22 @@ impl ApiConverter {
             .and_then(|user_id| user_id.as_str())
             .map(|s| s.to_string());
         
+        // Extract session_id from user_id
+        // Format: user_{hash}_account__session_{session-uuid}
+        let session_id = user_id.as_ref().and_then(|uid| {
+            uid.split("_session_")
+                .nth(1)
+                .map(|s| s.to_string())
+        });
+        
         // 🔍 DEBUG: 记录metadata处理信息
         if let Some(metadata) = &claude_req.metadata {
             debug!("Processing metadata: {:?}", metadata);
             if let Some(ref uid) = user_id {
                 debug!("Mapped user_id from metadata to OpenAI user field: {}", uid);
+            }
+            if let Some(ref sid) = session_id {
+                debug!("Extracted session_id for ModelHub: {}", sid);
             }
         }
         
@@ -124,6 +137,7 @@ impl ApiConverter {
             seed: None,
             tools: openai_tools,
             tool_choice: claude_req.tool_choice.clone(),
+            session_id, // For ModelHub server-side caching
         };
         
         debug!("Claude request conversion completed");
@@ -165,10 +179,32 @@ impl ApiConverter {
                     // Parse tool arguments safely (handles empty strings)
                     let input = self.safe_parse_tool_arguments(arguments);
                     
+                    // Extract thought_signature from tool_call if present (for Gemini thinking models)
+                    let thought_signature = tool_call.signature.clone()
+                        .or_else(|| {
+                            tool_call.extra_content.as_ref()
+                                .and_then(|ec| ec.get("google"))
+                                .and_then(|g| g.get("thought_signature"))
+                                .and_then(|ts| ts.as_str())
+                                .map(|s| s.to_string())
+                        });
+                    
+                    // Use provided ID if non-empty, otherwise generate one
+                    let tool_id = tool_call.id.as_ref()
+                        .filter(|id| !id.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| format!("toolu_{}", self.generate_id()));
+                    
+                    // Cache thought_signature if present for use in subsequent requests
+                    if let Some(ref sig) = thought_signature {
+                        cache_thought_signature(&tool_id, sig);
+                    }
+                    
                     content_blocks.push(ClaudeContentBlock::ToolUse {
-                        id: format!("toolu_{}", self.generate_id()),
+                        id: tool_id,
                         name: name.to_string(),
                         input,
+                        thought_signature,
                     });
                 }
             }
@@ -179,9 +215,14 @@ impl ApiConverter {
         // Map finish reason to stop reason as per conversion guide
         let stop_reason = self.map_finish_reason_to_stop_reason(choice.finish_reason.as_deref());
         
+        // Extract usage info with defaults if not provided
+        let (input_tokens, output_tokens) = match &openai_resp.usage {
+            Some(usage) => (usage.prompt_tokens, usage.completion_tokens),
+            None => (0, 0), // Default to 0 if usage not provided
+        };
+        
         debug!("Converted OpenAI response: model={}, tokens={}+{}, stop_reason={}", 
-               original_model, openai_resp.usage.prompt_tokens, 
-               openai_resp.usage.completion_tokens, &stop_reason);
+               original_model, input_tokens, output_tokens, &stop_reason);
         
         // Build Claude response according to conversion guide format
         let claude_resp = ClaudeResponse {
@@ -193,8 +234,8 @@ impl ApiConverter {
             stop_reason: Some(stop_reason),
             stop_sequence: None,
             usage: ClaudeUsage {
-                input_tokens: openai_resp.usage.prompt_tokens,
-                output_tokens: openai_resp.usage.completion_tokens,
+                input_tokens,
+                output_tokens,
             },
         };
         
@@ -263,13 +304,35 @@ impl ApiConverter {
                 let function = &tool_call.function;
                 
                 if let Some(name) = &function.name {
+                    // Extract thought_signature if present
+                    let thought_signature = tool_call.signature.clone()
+                        .or_else(|| {
+                            tool_call.extra_content.as_ref()
+                                .and_then(|ec| ec.get("google"))
+                                .and_then(|g| g.get("thought_signature"))
+                                .and_then(|ts| ts.as_str())
+                                .map(|s| s.to_string())
+                        });
+                    
+                    // Use provided ID if non-empty, otherwise generate one
+                    let tool_id = tool_call.id.as_ref()
+                        .filter(|id| !id.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| format!("toolu_{}", self.generate_id()));
+                    
+                    // Cache thought_signature if present for use in subsequent requests
+                    if let Some(ref sig) = thought_signature {
+                        cache_thought_signature(&tool_id, sig);
+                    }
+                    
                     // Tool use content block start
                     events.push(ClaudeStreamEvent::ContentBlockStart {
                         index: (i + 1) as u32,
                         content_block: ClaudeContentBlock::ToolUse {
-                            id: format!("toolu_{}", self.generate_id()),
+                            id: tool_id,
                             name: name.clone(),
                             input: serde_json::json!({}),
+                            thought_signature,
                         },
                     });
                 }
@@ -358,10 +421,12 @@ impl ApiConverter {
          }
     }
     
-    /// Convert Claude message to OpenAI message
-    /// Handles all content types including tool use conversion as per guide
-    fn convert_claude_message_to_openai(&self, claude_msg: ClaudeMessage) -> Result<OpenAIMessage> {
+    /// Convert Claude message to OpenAI messages
+    /// May return multiple messages (e.g., tool results become separate "tool" role messages)
+    fn convert_claude_message_to_openai_messages(&self, claude_msg: ClaudeMessage) -> Result<Vec<OpenAIMessage>> {
+        let mut messages = Vec::new();
         let mut tool_calls = Vec::new();
+        let mut tool_results = Vec::new();
         
         let content = match claude_msg.content {
             ClaudeContent::Text(text) => Some(OpenAIContent::Text(text)),
@@ -389,20 +454,32 @@ impl ApiConverter {
                                 },
                             });
                         }
-                        ClaudeContentBlock::ToolUse { id: _, name, input } => {
+                        ClaudeContentBlock::ToolUse { id, name, input, thought_signature } => {
                             // Convert Claude ToolUse to OpenAI tool call format
+                            // Use the original Claude tool_use id for proper matching
+                            // Include thought_signature for Gemini thinking models
+                            let extra_content = thought_signature.as_ref().map(|sig| {
+                                serde_json::json!({
+                                    "google": {
+                                        "thought_signature": sig
+                                    }
+                                })
+                            });
+                            
                             tool_calls.push(OpenAIToolCall {
-                                id: Some(format!("call_{}", self.generate_id())),
+                                id: Some(id),
                                 tool_type: Some("function".to_string()),
                                 function: OpenAIFunctionCall {
                                     name: Some(name),
                                     arguments: Some(input.to_string()),
                                 },
+                                signature: thought_signature,
+                                extra_content,
                             });
                         }
-                        ClaudeContentBlock::ToolResult { content, .. } => {
-                            // Tool results are handled as text content
-                            openai_parts.push(OpenAIContentPart::Text { text: content });
+                        ClaudeContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                            // Collect tool results to be sent as separate "tool" role messages
+                            tool_results.push((tool_use_id, content, is_error));
                         }
                     }
                 }
@@ -415,19 +492,36 @@ impl ApiConverter {
             }
         };
         
+        // If this message has tool results, create separate "tool" role messages for each
+        if !tool_results.is_empty() {
+            for (tool_call_id, result_content, _is_error) in tool_results {
+                messages.push(OpenAIMessage {
+                    role: "tool".to_string(),
+                    content: Some(OpenAIContent::Text(result_content)),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: Some(tool_call_id),
+                });
+            }
+            return Ok(messages);
+        }
+        
+        // Regular message (possibly with tool calls)
         let openai_tool_calls = if tool_calls.is_empty() {
             None
         } else {
             Some(tool_calls)
         };
         
-        Ok(OpenAIMessage {
+        messages.push(OpenAIMessage {
             role: claude_msg.role,
             content,
             name: None,
             tool_calls: openai_tool_calls,
             tool_call_id: None,
-        })
+        });
+        
+        Ok(messages)
     }
     
     /// Map OpenAI finish_reason to Claude stop_reason
@@ -564,11 +658,11 @@ mod tests {
                 logprobs: None,
                 finish_reason: Some("stop".to_string()),
             }],
-            usage: OpenAIUsage {
+            usage: Some(OpenAIUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
-            },
+            }),
             system_fingerprint: None,
         };
         

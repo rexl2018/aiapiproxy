@@ -6,6 +6,7 @@
 use crate::handlers::AppState;
 use crate::models::claude::*;
 use crate::models::openai::*;
+use crate::utils::logging::{create_request_log_summary, create_claude_request_log_summary};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -30,15 +31,16 @@ pub async fn handle_messages(
 ) -> Result<Response<axum::body::Body>, StatusCode> {
     debug!("Received Claude API request for model: {}", claude_request.model);
     
-    // 🔍 DEBUG: 记录完整的客户端请求内容
-    if let Ok(request_json) = serde_json::to_string_pretty(&claude_request) {
-        debug!("📥 Client Request Body:\n{}", request_json);
+    // 🔍 DEBUG: 记录客户端请求摘要
+    let log_summary = create_claude_request_log_summary(&claude_request);
+    if let Ok(summary_json) = serde_json::to_string_pretty(&log_summary) {
+        debug!("📥 Client Request:\n{}", summary_json);
     }
     
     // Validate request
     if let Err(error_msg) = validate_claude_request(&claude_request) {
         warn!("Request validation failed: {}", error_msg);
-        return Ok(create_error_response("invalid_request_error", &error_msg).into_response());
+        return Ok(create_error_response("invalid_request_error", &error_msg, StatusCode::BAD_REQUEST));
     }
     
     // Convert Claude request to OpenAI request
@@ -47,14 +49,15 @@ pub async fn handle_messages(
             // Keep the original model path for routing
             req.model = claude_request.model.clone();
             
-            if let Ok(openai_json) = serde_json::to_string_pretty(&req) {
-                debug!("🔄 Converted OpenAI Request:\n{}", openai_json);
+            let log_summary = create_request_log_summary(&req);
+            if let Ok(summary_json) = serde_json::to_string_pretty(&log_summary) {
+                debug!("🔄 Converted OpenAI Request:\n{}", summary_json);
             }
             req
         },
         Err(e) => {
             error!("Request conversion failed: {}", e);
-            return Ok(create_error_response("conversion_error", "Failed to convert request").into_response());
+            return Ok(create_error_response("conversion_error", "Failed to convert request", StatusCode::INTERNAL_SERVER_ERROR));
         }
     };
     
@@ -70,17 +73,19 @@ pub async fn handle_messages(
 
 
 /// Categorize error message to appropriate error type and message
-fn categorize_error(error_message: &str) -> (&str, &str) {
-    if error_message.contains("TooManyRequests") || error_message.contains("RateLimitExceeded") {
-        ("rate_limit_error", "Rate limit exceeded. Please try again later.")
-    } else if error_message.contains("authentication") || error_message.contains("Invalid API key") {
-        ("authentication_error", "Invalid API key provided.")
+fn categorize_error(error_message: &str) -> (&str, &str, StatusCode) {
+    if error_message.contains("429") || error_message.contains("TooManyRequests") || error_message.contains("RateLimitExceeded") || error_message.contains("Too Many Requests") {
+        ("rate_limit_error", "Rate limit exceeded. Please try again later.", StatusCode::TOO_MANY_REQUESTS)
+    } else if error_message.contains("authentication") || error_message.contains("Invalid API key") || error_message.contains("401") {
+        ("authentication_error", "Invalid API key provided.", StatusCode::UNAUTHORIZED)
     } else if error_message.contains("insufficient_quota") || error_message.contains("quota") {
-        ("billing_error", "Insufficient quota or billing issue.")
-    } else if error_message.contains("not found") || error_message.contains("Model not found") {
-        ("not_found_error", "The requested model was not found.")
+        ("billing_error", "Insufficient quota or billing issue.", StatusCode::PAYMENT_REQUIRED)
+    } else if error_message.contains("not found") || error_message.contains("Model not found") || error_message.contains("404") {
+        ("not_found_error", "The requested model was not found.", StatusCode::NOT_FOUND)
+    } else if error_message.contains("400") || error_message.contains("Bad Request") {
+        ("invalid_request_error", "Bad request to upstream API.", StatusCode::BAD_REQUEST)
     } else {
-        ("api_error", "External API request failed.")
+        ("api_error", "External API request failed.", StatusCode::BAD_GATEWAY)
     }
 }
 
@@ -103,8 +108,8 @@ async fn handle_normal_request(
         Err(e) => {
             error!("Provider API request failed: {}", e);
             let error_msg = e.to_string();
-            let (error_type, claude_message) = categorize_error(&error_msg);
-            return Ok(create_error_response(error_type, claude_message).into_response());
+            let (error_type, claude_message, status_code) = categorize_error(&error_msg);
+            return Ok(create_error_response(error_type, claude_message, status_code));
         }
     };
     
@@ -146,7 +151,7 @@ async fn handle_stream_request(
             Err(e) => {
                 error!("Provider streaming API request failed: {}", e);
                 let error_msg = e.to_string();
-                let (error_type, claude_message) = categorize_error(&error_msg);
+                let (error_type, claude_message, _status_code) = categorize_error(&error_msg);
                 
                 let claude_error = ClaudeStreamEvent::Error {
                     error: ClaudeError {
@@ -260,13 +265,19 @@ fn validate_claude_request(request: &ClaudeRequest) -> Result<(), String> {
         
         // Only reject if content is completely empty (no text, images, or tool calls)
         // 🔧 修复工具调用验证：允许只包含工具调用的消息
+        // 🔧 允许空的 assistant 消息（在 tool_use 流程中可能出现）
         if content_text.is_empty() && !has_images && !has_tool_calls {
-            warn!("Message {} validation failed - completely empty content: text_empty={}, no_images={}, no_tool_calls={}", 
-                  i, content_text.is_empty(), !has_images, !has_tool_calls);
-            warn!("Complete message {} details: role='{}', content={:#?}", i, message.role, message.content);
-            warn!("Full request context: model='{}', messages_count={}, max_tokens={}", 
-                  request.model, request.messages.len(), request.max_tokens);
-            return Err(format!("Message {} content cannot be empty", i));
+            // Allow empty assistant messages - they can occur in tool_use flows
+            // Only reject empty user messages
+            if message.role == "user" {
+                warn!("Message {} validation failed - completely empty user content", i);
+                warn!("Full request context: model='{}', messages_count={}, max_tokens={}", 
+                      request.model, request.messages.len(), request.max_tokens);
+                return Err(format!("Message {} content cannot be empty", i));
+            } else {
+                debug!("Allowing empty {} message at index {} (may be part of tool_use flow)", 
+                       message.role, i);
+            }
         }
         
         // For text-only messages, allow whitespace-only content as some clients may send formatting
@@ -306,7 +317,7 @@ fn extract_auth_header(headers: &HeaderMap, auth_header_name: &str) -> Option<St
 }
 
 /// Error response helper function that creates a Claude-compatible error response
-fn create_error_response(error_type: &str, message: &str) -> Json<serde_json::Value> {
+fn create_error_response(error_type: &str, message: &str, status_code: StatusCode) -> Response<axum::body::Body> {
     // Create a response that matches Claude API error format but includes expected fields
     let error_response = serde_json::json!({
         "type": "error",
@@ -327,7 +338,11 @@ fn create_error_response(error_type: &str, message: &str) -> Json<serde_json::Va
         }
     });
     
-    Json(error_response)
+    Response::builder()
+        .status(status_code)
+        .header("Content-Type", "application/json")
+        .body(axum::body::Body::from(error_response.to_string()))
+        .unwrap()
 }
 
 #[cfg(test)]
