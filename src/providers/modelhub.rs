@@ -98,11 +98,17 @@ struct ResponsesInputMessage {
 #[derive(Debug, Deserialize)]
 struct ResponsesApiResponse {
     id: String,
-    model: String,
+    #[serde(default)]
+    model: Option<String>,
     output: Vec<ResponsesOutput>,
     #[serde(default)]
     usage: Option<ResponsesUsage>,
     status: String,
+    // Additional fields that may be present but we don't need
+    #[serde(default)]
+    created_at: Option<u64>,
+    #[serde(default)]
+    incomplete_details: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +130,9 @@ struct ResponsesOutput {
     name: Option<String>,
     #[serde(default)]
     arguments: Option<String>,
+    // For reasoning output
+    #[serde(default)]
+    summary: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,10 +272,19 @@ impl ModelHubProvider {
         let status = response.status();
         
         if status.is_success() {
-            let responses_api_response: ResponsesApiResponse = response
-                .json()
-                .await
-                .context("Failed to parse Responses API response")?;
+            // Get response text first for debugging
+            let response_text = response.text().await
+                .context("Failed to read Responses API response body")?;
+            
+            debug!("📥 Responses API Raw Response:\n{}", 
+                   if response_text.len() > 1000 { &response_text[..1000] } else { &response_text });
+            
+            let responses_api_response: ResponsesApiResponse = serde_json::from_str(&response_text)
+                .with_context(|| {
+                    error!("Failed to parse Responses API response. Raw response:\n{}", 
+                           if response_text.len() > 2000 { &response_text[..2000] } else { &response_text });
+                    "Failed to parse Responses API response"
+                })?;
             
             debug!("ModelHub Responses API request completed successfully");
             
@@ -290,6 +308,14 @@ impl ModelHubProvider {
         let mut input: Vec<Value> = Vec::new();
         let mut system_instructions: Option<String> = None;
         
+        // Debug: log message roles and tool info
+        for (i, msg) in request.messages.iter().enumerate() {
+            let has_tool_calls = msg.tool_calls.as_ref().map(|t| t.len()).unwrap_or(0);
+            let tool_call_id = msg.tool_call_id.as_ref().map(|s| s.as_str()).unwrap_or("none");
+            debug!("Message {}: role={}, has_tool_calls={}, tool_call_id={}", 
+                   i, msg.role, has_tool_calls, tool_call_id);
+        }
+        
         for msg in &request.messages {
             let role = msg.role.as_str();
             
@@ -307,37 +333,49 @@ impl ModelHubProvider {
                     let output = msg.content.as_ref()
                         .map(|c| c.extract_text())
                         .unwrap_or_default();
+                    debug!("Adding function_call_output with call_id={}", tool_call_id);
                     input.push(serde_json::json!({
                         "type": "function_call_output",
                         "call_id": tool_call_id,
                         "output": output
                     }));
+                } else {
+                    warn!("Tool message without tool_call_id, skipping");
                 }
                 continue;
             }
             
             // Handle assistant with tool_calls -> function_call items
             if role == "assistant" {
+                let has_tool_calls = msg.tool_calls.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
+                
                 if let Some(tool_calls) = &msg.tool_calls {
                     for tc in tool_calls {
                         if let Some(id) = &tc.id {
+                            debug!("Adding function_call with call_id={}, name={:?}", id, tc.function.name);
                             input.push(serde_json::json!({
                                 "type": "function_call",
                                 "call_id": id,
                                 "name": tc.function.name,
                                 "arguments": tc.function.arguments.clone().unwrap_or_default()
                             }));
+                        } else {
+                            warn!("Tool call without id, skipping");
                         }
                     }
                 }
-                // If assistant has text content, also add it
-                if let Some(content) = &msg.content {
-                    let text = content.extract_text();
-                    if !text.is_empty() {
-                        input.push(serde_json::json!({
-                            "role": "assistant",
-                            "content": [{ "type": "output_text", "text": text }]
-                        }));
+                
+                // Only add assistant text content if there are NO tool calls
+                // (If there are tool calls, adding text here would break the function_call/function_call_output sequence)
+                if !has_tool_calls {
+                    if let Some(content) = &msg.content {
+                        let text = content.extract_text();
+                        if !text.is_empty() {
+                            input.push(serde_json::json!({
+                                "role": "assistant",
+                                "content": [{ "type": "output_text", "text": text }]
+                            }));
+                        }
                     }
                 }
                 continue;
@@ -391,10 +429,16 @@ impl ModelHubProvider {
             }).collect()
         });
         
-        // Ensure max_output_tokens >= 16
-        let max_output_tokens = request.max_tokens
-            .or(model_config.max_tokens)
-            .map(|t| if t < 16 { 16 } else { t });
+        // Ensure max_output_tokens is reasonable
+        // Take the max of request and config values to avoid Claude Code's low default (e.g., 1)
+        let max_output_tokens = match (request.max_tokens, model_config.max_tokens) {
+            (Some(req), Some(cfg)) => Some(req.max(cfg)),
+            (Some(req), None) => Some(req.max(8192)), // default minimum for Codex
+            (None, Some(cfg)) => Some(cfg),
+            (None, None) => Some(8192),
+        };
+        debug!("📊 Responses API max_output_tokens: request={:?}, config={:?}, final={:?}",
+               request.max_tokens, model_config.max_tokens, max_output_tokens);
         
         Ok(ResponsesApiRequest {
             model: model_config.name.clone(),
@@ -439,7 +483,15 @@ impl ModelHubProvider {
                         });
                     }
                 },
-                _ => {}
+                "reasoning" => {
+                    // Reasoning output doesn't contain text content, just internal reasoning
+                    // We can safely ignore it as it's for debugging/transparency
+                    debug!("Responses API: got reasoning output with {} summary items", 
+                           output.summary.as_ref().map(|s| s.len()).unwrap_or(0));
+                },
+                other => {
+                    debug!("Responses API: ignoring unknown output type: {}", other);
+                }
             }
         }
         
@@ -471,7 +523,7 @@ impl ModelHubProvider {
             id: response.id,
             object: "chat.completion".to_string(),
             created: 0,
-            model: response.model,
+            model: response.model.unwrap_or_default(),
             choices: vec![choice],
             usage,
             system_fingerprint: None,

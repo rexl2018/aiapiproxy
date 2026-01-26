@@ -70,6 +70,9 @@ pub enum ClaudeContent {
     Text(String),
     /// Structured content blocks
     Blocks(Vec<ClaudeContentBlock>),
+    /// Catch-all for unexpected content types (null, objects, etc.)
+    /// This prevents deserialization errors for edge cases
+    Other(serde_json::Value),
 }
 
 /// Claude content block
@@ -102,6 +105,9 @@ pub enum ClaudeContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    /// Unknown/unsupported block type - catch-all to prevent parsing errors
+    #[serde(other)]
+    Unknown,
 }
 
 /// Claude image source
@@ -263,6 +269,7 @@ impl SystemPrompt {
                         ClaudeContentBlock::Image { .. } => None,
                         ClaudeContentBlock::ToolUse { .. } => None,
                         ClaudeContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                        ClaudeContentBlock::Unknown => None,
                     })
                     .collect::<Vec<String>>()
                     .join(" ")
@@ -284,10 +291,12 @@ impl ClaudeContent {
                         ClaudeContentBlock::Image { .. } => None,
                         ClaudeContentBlock::ToolUse { .. } => None,
                         ClaudeContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                        ClaudeContentBlock::Unknown => None,
                     })
                     .collect::<Vec<String>>()
                     .join("") // 🔧 修复：直接连接文本块，不添加额外空格
             }
+            ClaudeContent::Other(_) => String::new(),
         }
     }
     
@@ -295,20 +304,38 @@ impl ClaudeContent {
     pub fn has_images(&self) -> bool {
         match self {
             ClaudeContent::Text(_) => false,
+            ClaudeContent::Other(_) => false,
             ClaudeContent::Blocks(blocks) => {
                 blocks.iter().any(|block| matches!(block, ClaudeContentBlock::Image { .. }))
             }
         }
     }
     
-    /// Check if content has tool calls
+    /// Check if content has tool calls (ToolUse blocks)
     pub fn has_tool_calls(&self) -> bool {
         match self {
             ClaudeContent::Text(_) => false,
+            ClaudeContent::Other(_) => false,
             ClaudeContent::Blocks(blocks) => {
                 blocks.iter().any(|block| matches!(block, ClaudeContentBlock::ToolUse { .. }))
             }
         }
+    }
+    
+    /// Check if content has tool results (ToolResult blocks)
+    pub fn has_tool_results(&self) -> bool {
+        match self {
+            ClaudeContent::Text(_) => false,
+            ClaudeContent::Other(_) => false,
+            ClaudeContent::Blocks(blocks) => {
+                blocks.iter().any(|block| matches!(block, ClaudeContentBlock::ToolResult { .. }))
+            }
+        }
+    }
+    
+    /// Check if content is a catch-all Other variant (null or unexpected type)
+    pub fn is_other(&self) -> bool {
+        matches!(self, ClaudeContent::Other(_))
     }
 }
 

@@ -430,6 +430,15 @@ impl ApiConverter {
         
         let content = match claude_msg.content {
             ClaudeContent::Text(text) => Some(OpenAIContent::Text(text)),
+            ClaudeContent::Other(v) => {
+                // Handle null or unexpected content types
+                if v.is_null() {
+                    None
+                } else {
+                    warn!("Unexpected content type in Claude message: {:?}", v);
+                    None
+                }
+            }
             ClaudeContent::Blocks(blocks) => {
                 let mut openai_parts = Vec::new();
                 
@@ -480,6 +489,10 @@ impl ApiConverter {
                         ClaudeContentBlock::ToolResult { tool_use_id, content, is_error } => {
                             // Collect tool results to be sent as separate "tool" role messages
                             tool_results.push((tool_use_id, content, is_error));
+                        }
+                        ClaudeContentBlock::Unknown => {
+                            // Skip unknown block types
+                            warn!("Skipping unknown content block type in message conversion");
                         }
                     }
                 }

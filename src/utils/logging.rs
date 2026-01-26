@@ -10,12 +10,19 @@ use crate::models::openai::{OpenAIContent, OpenAIMessage, OpenAIRequest};
 pub const VERBOSE_REQUEST_LOGGING: bool = false;
 
 /// Truncate a string with a note about original length
+/// Handles UTF-8 properly by finding valid character boundaries
 fn truncate_content(s: &str, max_len: usize) -> String {
-    if s.len() > max_len {
-        format!("{}... ({} chars truncated)", &s[..max_len], s.len() - max_len)
-    } else {
-        s.to_string()
+    if s.len() <= max_len {
+        return s.to_string();
     }
+    
+    // Find a valid UTF-8 character boundary at or before max_len
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    
+    format!("{}... ({} chars truncated)", &s[..end], s.len() - end)
 }
 
 /// Create a filtered version of OpenAI message for logging
@@ -79,6 +86,14 @@ fn filter_claude_message(msg: &crate::models::claude::ClaudeMessage) -> serde_js
         ClaudeContent::Text(t) => {
             serde_json::Value::String(truncate_content(t, 200))
         },
+        ClaudeContent::Other(v) => {
+            // For null/unknown content types, show what we got
+            if v.is_null() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({"_unexpected_content": format!("{:?}", v)})
+            }
+        },
         ClaudeContent::Blocks(blocks) => {
             let previews: Vec<serde_json::Value> = blocks.iter()
                 .take(3)
@@ -99,6 +114,9 @@ fn filter_claude_message(msg: &crate::models::claude::ClaudeMessage) -> serde_js
                         },
                         ClaudeContentBlock::ToolResult { tool_use_id, content, .. } => {
                             serde_json::json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": truncate_content(content, 50)})
+                        },
+                        ClaudeContentBlock::Unknown => {
+                            serde_json::json!({"type": "unknown"})
                         },
                     }
                 })

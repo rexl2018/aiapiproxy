@@ -257,18 +257,20 @@ fn validate_claude_request(request: &ClaudeRequest) -> Result<(), String> {
         let content_text = message.content.extract_text();
         let has_images = message.content.has_images();
         let has_tool_calls = message.content.has_tool_calls();
+        let has_tool_results = message.content.has_tool_results();
+        let is_other_content = message.content.is_other();
         
         // 🔍 DEBUG: 详细记录消息验证信息
-        debug!("Validating message {}: role={}, content_text_len={}, has_images={}, has_tool_calls={}", 
-               i, message.role, content_text.len(), has_images, has_tool_calls);
-        debug!("Message {} content type: {:?}", i, message.content);
+        debug!("Validating message {}: role={}, content_text_len={}, has_images={}, has_tool_calls={}, has_tool_results={}, is_other={}", 
+               i, message.role, content_text.len(), has_images, has_tool_calls, has_tool_results, is_other_content);
         
-        // Only reject if content is completely empty (no text, images, or tool calls)
-        // 🔧 修复工具调用验证：允许只包含工具调用的消息
+        // Only reject if content is completely empty (no text, images, tool calls, tool results, or special content)
+        // 🔧 修复工具调用验证：允许只包含工具调用或工具结果的消息
         // 🔧 允许空的 assistant 消息（在 tool_use 流程中可能出现）
-        if content_text.is_empty() && !has_images && !has_tool_calls {
+        // 🔧 允许 Other 类型内容（null 或其他特殊格式）- 让上游 API 处理
+        if content_text.is_empty() && !has_images && !has_tool_calls && !has_tool_results && !is_other_content {
             // Allow empty assistant messages - they can occur in tool_use flows
-            // Only reject empty user messages
+            // Only reject truly empty user messages (no tool results either)
             if message.role == "user" {
                 warn!("Message {} validation failed - completely empty user content", i);
                 warn!("Full request context: model='{}', messages_count={}, max_tokens={}", 
