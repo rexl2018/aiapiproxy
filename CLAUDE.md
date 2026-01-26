@@ -16,6 +16,7 @@ aiapiproxy is a Rust-based API proxy service that converts Claude API requests t
 - `src/providers/modelhub.rs` - ModelHub provider with two modes:
   - `responses`: OpenAI Responses API (`/responses` endpoint)
   - `gemini`: Gemini via OpenAI chat format (`/v2/crawl` endpoint)
+- `src/providers/ark.rs` - Ark provider using OpenAI Responses API with Bearer token auth
 
 ### Services
 - `src/services/router.rs` - Request router (resolves model -> provider/model)
@@ -41,7 +42,7 @@ aiapiproxy is a Rust-based API proxy service that converts Claude API requests t
   },
   "providers": {
     "provider-name": {
-      "type": "openai | modelhub",
+      "type": "openai | modelhub | ark",
       "baseUrl": "https://api.example.com",
       "apiKey": "...",
       "options": { "mode": "responses | gemini", "apiKeyParam": "ak" },
@@ -86,6 +87,7 @@ Client (Claude API format response)
 - Provider type determines which Provider implementation is used
 - ModelHub `responses` mode uses `/responses` endpoint with Responses API format
 - ModelHub `gemini` mode uses `/v2/crawl` endpoint with OpenAI chat format
+- Ark provider uses `/responses` endpoint with Bearer token authentication (env var: `ARK_API_KEY`)
 
 🤖 Generated with [Claude Code](https://claude.ai/code)
 Co-Authored-By: Claude <noreply@anthropic.com>

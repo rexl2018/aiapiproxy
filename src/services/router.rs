@@ -4,7 +4,7 @@
 
 use crate::config::{AppConfig, ModelConfig, ProviderConfig};
 use crate::models::openai::{OpenAIRequest, OpenAIResponse, OpenAIStreamResponse};
-use crate::providers::{BoxStream, ModelHubProvider, OpenAIProvider, Provider};
+use crate::providers::{ArkProvider, BoxStream, ModelHubProvider, OpenAIProvider, Provider};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +33,7 @@ impl Router {
                 let provider: Arc<dyn Provider> = match provider_type.as_str() {
                     "openai" => Arc::new(OpenAIProvider::new()?),
                     "modelhub" => Arc::new(ModelHubProvider::new()?),
+                    "ark" => Arc::new(ArkProvider::new()?),
                     "anthropic" => {
                         // For anthropic type, we can use OpenAI provider with custom URL
                         // as the API format is handled by the converter

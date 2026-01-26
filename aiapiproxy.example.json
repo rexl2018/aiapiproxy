@@ -84,6 +84,24 @@
           }
         }
       }
+    },
+    "ark": {
+      "type": "ark",
+      "baseUrl": "https://ark-ap-southeast.byteintl.net/api/v3",
+      "apiKey": "your-ark-api-key-here",
+      "models": {
+        "glm47": {
+          "name": "ep-20260126161851-5gf7g",
+          "alias": "GLM47",
+          "maxTokens": 8192,
+          "options": {
+            "mode": "responses",
+            "supportsStreaming": true,
+            "supportsTools": true,
+            "supportsVision": false
+          }
+        }
+      }
     }
   },
   "modelMapping": {
@@ -96,6 +114,7 @@
     "claude-opus-4-20250514": "modelhub-gemini/gemini-3-pro",
     "sonnet": "modelhub-responses/gpt-5-codex",
     "opus": "modelhub-responses/gpt-5-codex",
-    "haiku": "modelhub-responses/gpt-5-lite"
+    "haiku": "modelhub-responses/gpt-5-lite",
+    "glm": "ark/glm47"
   }
 }

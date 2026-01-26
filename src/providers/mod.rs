@@ -2,6 +2,7 @@
 //!
 //! Defines the Provider trait and provider implementations
 
+pub mod ark;
 pub mod modelhub;
 pub mod openai;
 
@@ -41,5 +42,6 @@ pub trait Provider: Send + Sync {
     ) -> Result<BoxStream<'static, OpenAIStreamResponse>>;
 }
 
+pub use ark::ArkProvider;
 pub use modelhub::ModelHubProvider;
 pub use openai::OpenAIProvider;

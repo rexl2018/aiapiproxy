@@ -118,6 +118,10 @@ pub struct ModelConfig {
 /// Model-specific options
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelOptions {
+    /// Mode for this model (e.g., "responses", "gemini", "chat")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    
     /// Whether this model supports streaming
     #[serde(rename = "supportsStreaming", default = "default_true")]
     pub supports_streaming: bool,
@@ -190,7 +194,7 @@ impl AppConfig {
         
         for (name, provider) in &self.providers {
             // Validate provider type
-            let valid_types = ["openai", "modelhub", "anthropic"];
+            let valid_types = ["openai", "modelhub", "anthropic", "ark"];
             if !valid_types.contains(&provider.provider_type.as_str()) {
                 anyhow::bail!("Invalid provider type '{}' for provider '{}'", provider.provider_type, name);
             }
