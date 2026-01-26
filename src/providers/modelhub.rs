@@ -308,6 +308,18 @@ impl ModelHubProvider {
         let mut input: Vec<Value> = Vec::new();
         let mut system_instructions: Option<String> = None;
         
+        // First pass: collect all tool result call_ids
+        // This is needed because Codex requires every function_call to have a matching function_call_output
+        // But Claude Code may send incomplete tool call sequences (user can interrupt)
+        let mut tool_result_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for msg in &request.messages {
+            if msg.role == "tool" {
+                if let Some(id) = &msg.tool_call_id {
+                    tool_result_ids.insert(id.clone());
+                }
+            }
+        }
+        
         // Debug: log message roles and tool info
         for (i, msg) in request.messages.iter().enumerate() {
             let has_tool_calls = msg.tool_calls.as_ref().map(|t| t.len()).unwrap_or(0);
@@ -352,13 +364,19 @@ impl ModelHubProvider {
                 if let Some(tool_calls) = &msg.tool_calls {
                     for tc in tool_calls {
                         if let Some(id) = &tc.id {
-                            debug!("Adding function_call with call_id={}, name={:?}", id, tc.function.name);
-                            input.push(serde_json::json!({
-                                "type": "function_call",
-                                "call_id": id,
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments.clone().unwrap_or_default()
-                            }));
+                            // Only add function_call if there's a matching function_call_output
+                            // This handles the case where Claude Code sends incomplete tool call sequences
+                            if tool_result_ids.contains(id) {
+                                debug!("Adding function_call with call_id={}, name={:?}", id, tc.function.name);
+                                input.push(serde_json::json!({
+                                    "type": "function_call",
+                                    "call_id": id,
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments.clone().unwrap_or_default()
+                                }));
+                            } else {
+                                warn!("Skipping orphan function_call with call_id={} (no matching output)", id);
+                            }
                         } else {
                             warn!("Tool call without id, skipping");
                         }
