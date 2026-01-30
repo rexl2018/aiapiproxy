@@ -231,6 +231,9 @@ pub enum ClaudeContentDelta {
     /// Text delta
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
+    /// Input JSON delta (for tool use arguments)
+    #[serde(rename = "input_json_delta")]
+    InputJsonDelta { partial_json: String },
 }
 
 /// Claude message delta

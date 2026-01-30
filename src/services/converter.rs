@@ -341,8 +341,8 @@ impl ApiConverter {
                     // Tool input delta (partial JSON)
                     events.push(ClaudeStreamEvent::ContentBlockDelta {
                         index: (i + 1) as u32,
-                        delta: ClaudeContentDelta::TextDelta {
-                            text: arguments.clone(),
+                        delta: ClaudeContentDelta::InputJsonDelta {
+                            partial_json: arguments.clone(),
                         },
                     });
                 }

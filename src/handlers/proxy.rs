@@ -180,6 +180,7 @@ async fn handle_stream_request(
                             for event in claude_events {
                                 match serde_json::to_string(&event) {
                                     Ok(json) => {
+                                        debug!("📤 Sending Claude event: {}", if json.len() > 200 { &json[..200] } else { &json });
                                         let sse_event = Event::default().data(json);
                                         if tx.send(Ok(sse_event)).await.is_err() {
                                             debug!("Client disconnected");
@@ -206,8 +207,8 @@ async fn handle_stream_request(
             }
         }
         
-        let end_event = Event::default().event("done").data("{}");
-        let _ = tx.send(Ok(end_event)).await;
+        // Stream ends naturally after message_stop - no need to send additional events
+        // Claude API doesn't expect a "done" event with empty data
     });
     
     let stream = ReceiverStream::new(rx);

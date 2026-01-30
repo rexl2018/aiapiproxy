@@ -27,6 +27,17 @@
             "supportsTools": true,
             "supportsVision": true
           }
+        },
+        "o3-mini": {
+          "name": "o3-mini",
+          "alias": "o3",
+          "maxTokens": 16384,
+          "options": {
+            "supportsStreaming": true,
+            "supportsTools": true,
+            "supportsVision": false,
+            "supportsTemperature": false
+          }
         }
       }
     },

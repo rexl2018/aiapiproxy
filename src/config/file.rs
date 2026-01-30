@@ -133,6 +133,11 @@ pub struct ModelOptions {
     /// Whether this model supports vision/images
     #[serde(rename = "supportsVision", default)]
     pub supports_vision: bool,
+    
+    /// Whether this model supports temperature parameter
+    /// Set to false for reasoning models (o1, o3, etc.) that don't support temperature
+    #[serde(rename = "supportsTemperature", default = "default_true")]
+    pub supports_temperature: bool,
 }
 
 fn default_true() -> bool {

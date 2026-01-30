@@ -36,14 +36,14 @@ fn create_log_responses_request(request: &ResponsesApiRequest) -> serde_json::Va
 
 // ====== Responses API Structures ======
 
-/// OpenAI Responses API Request format
+/// Ark Responses API Request format
 #[derive(Debug, Serialize)]
 struct ResponsesApiRequest {
     model: String,
     /// Input can contain various types:
-    /// - Messages: { role: "user"|"assistant", content: [...] }
-    /// - Function calls: { type: "function_call", call_id, name, arguments }
-    /// - Function results: { type: "function_call_output", call_id, output }
+    /// - Messages: { type: "message", role: "user"|"assistant", content: [...], status: "completed" }
+    /// - Function calls: { type: "function_call", call_id, name, arguments, status: "completed" }
+    /// - Function results: { type: "function_call_output", call_id, output, status: "completed" }
     input: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
@@ -231,7 +231,8 @@ impl ArkProvider {
                         "type": "function_call_output",
                         "call_id": tool_call_id,
                         "output": output,
-                        "status": "completed"
+                        "status": "completed",
+                        "partial": false
                     }));
                 } else {
                     warn!("Tool message without tool_call_id, skipping");
@@ -254,7 +255,8 @@ impl ArkProvider {
                                     "call_id": id,
                                     "name": tc.function.name,
                                     "arguments": tc.function.arguments.clone().unwrap_or_default(),
-                                    "status": "completed"
+                                    "status": "completed",
+                                    "partial": false
                                 }));
                             } else {
                                 warn!("Skipping orphan function_call with call_id={} (no matching output)", id);
@@ -274,7 +276,8 @@ impl ArkProvider {
                                 "type": "message",
                                 "role": "assistant",
                                 "content": [{ "type": "output_text", "text": text }],
-                                "status": "completed"
+                                "status": "completed",
+                                "partial": false
                             }));
                         }
                     }
@@ -313,7 +316,8 @@ impl ArkProvider {
                     "type": "message",
                     "role": "user",
                     "content": content,
-                    "status": "completed"
+                    "status": "completed",
+                    "partial": false
                 }));
             }
         }
@@ -340,11 +344,20 @@ impl ArkProvider {
         debug!("📊 Ark Responses API max_output_tokens: request={:?}, config={:?}, final={:?}",
                request.max_tokens, model_config.max_tokens, max_output_tokens);
         
+        // Only include temperature if the model supports it
+        // Reasoning models (o1, o3, etc.) don't support temperature
+        let temperature = if model_config.options.supports_temperature {
+            request.temperature.or(model_config.temperature)
+        } else {
+            debug!("📊 Model {} does not support temperature, skipping parameter", model_config.name);
+            None
+        };
+        
         Ok(ResponsesApiRequest {
             model: model_config.name.clone(),
             input,
             max_output_tokens,
-            temperature: request.temperature.or(model_config.temperature),
+            temperature,
             stream: None,
             tools,
             instructions: system_instructions,
@@ -548,6 +561,26 @@ impl ArkProvider {
                     let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
                     
                     match event_type {
+                        // Handle response start - send role to initialize the stream
+                        "response.created" | "response.in_progress" => {
+                            return Some(Ok(OpenAIStreamResponse {
+                                id: event.get("response").and_then(|r| r.get("id")).and_then(|i| i.as_str()).unwrap_or("").to_string(),
+                                object: "chat.completion.chunk".to_string(),
+                                created: 0,
+                                model: String::new(),
+                                system_fingerprint: None,
+                                choices: vec![OpenAIStreamChoice {
+                                    index: 0,
+                                    delta: OpenAIStreamDelta {
+                                        role: Some("assistant".to_string()),
+                                        content: None,
+                                        tool_calls: None,
+                                    },
+                                    logprobs: None,
+                                    finish_reason: None,
+                                }],
+                            }));
+                        },
                         "response.output_text.delta" => {
                             if let Some(delta) = event.get("delta").and_then(|d| d.as_str()) {
                                 return Some(Ok(OpenAIStreamResponse {

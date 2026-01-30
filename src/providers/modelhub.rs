@@ -458,11 +458,20 @@ impl ModelHubProvider {
         debug!("📊 Responses API max_output_tokens: request={:?}, config={:?}, final={:?}",
                request.max_tokens, model_config.max_tokens, max_output_tokens);
         
+        // Only include temperature if the model supports it
+        // Reasoning models (o1, o3, etc.) don't support temperature
+        let temperature = if model_config.options.supports_temperature {
+            request.temperature.or(model_config.temperature)
+        } else {
+            debug!("📊 Model {} does not support temperature, skipping parameter", model_config.name);
+            None
+        };
+        
         Ok(ResponsesApiRequest {
             model: model_config.name.clone(),
             input,
             max_output_tokens,
-            temperature: request.temperature.or(model_config.temperature),
+            temperature,
             stream: None,
             tools,
             instructions: system_instructions,
@@ -580,17 +589,41 @@ impl ModelHubProvider {
         }
         
         // Parse Responses API SSE stream and convert to OpenAI stream format
+        // Use a shared buffer for handling incomplete lines across chunks
+        let line_buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let role_sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        
         let stream = response
             .bytes_stream()
             .filter_map(move |chunk_result| {
+                let line_buffer = line_buffer.clone();
+                let role_sent = role_sent.clone();
                 match chunk_result {
                     Ok(chunk) => {
-                        match std::str::from_utf8(&chunk) {
-                            Ok(chunk_str) => {
-                                Self::parse_responses_api_sse(chunk_str)
+                        // Convert bytes to string, replacing invalid UTF-8 with replacement char
+                        let chunk_str = String::from_utf8_lossy(&chunk);
+                        
+                        // Append to buffer
+                        let mut buffer = line_buffer.lock().unwrap();
+                        buffer.push_str(&chunk_str);
+                        
+                        // Process all complete lines (ending with \n)
+                        // Keep the incomplete last line in the buffer
+                        let mut result: Option<Result<OpenAIStreamResponse>> = None;
+                        
+                        while let Some(newline_pos) = buffer.find('\n') {
+                            let line = buffer[..newline_pos].to_string();
+                            *buffer = buffer[newline_pos + 1..].to_string();
+                            
+                            // Try to parse this line
+                            if let Some(parsed) = Self::parse_single_sse_line(&line, &role_sent) {
+                                result = Some(parsed);
+                                // Return immediately on first valid result
+                                break;
                             }
-                            Err(e) => Some(Err(anyhow::anyhow!("Invalid UTF-8: {}", e))),
                         }
+                        
+                        result
                     }
                     Err(e) => Some(Err(anyhow::anyhow!("Stream error: {}", e))),
                 }
@@ -599,24 +632,42 @@ impl ModelHubProvider {
         Ok(Box::pin(stream))
     }
     
-    /// Parse Responses API SSE chunk and convert to OpenAI stream response
-    fn parse_responses_api_sse(chunk_str: &str) -> Option<Result<OpenAIStreamResponse>> {
-        for line in chunk_str.lines() {
-            if let Some(data) = line.strip_prefix("data: ") {
-                if data.trim() == "[DONE]" {
-                    return None;
-                }
-                
-                // Parse Responses API streaming event
-                if let Ok(event) = serde_json::from_str::<Value>(data) {
-                    // Handle different event types
-                    let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    /// Parse a single SSE line
+    fn parse_single_sse_line(
+        line: &str, 
+        role_sent: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Option<Result<OpenAIStreamResponse>> {
+        let line = line.trim();
+        
+        // Skip empty lines and event type lines
+        if line.is_empty() || line.starts_with("event:") || line.starts_with(':') {
+            return None;
+        }
+        
+        if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            
+            if data == "[DONE]" {
+                debug!("📡 SSE: received [DONE]");
+                return None;
+            }
+            
+            // Parse Responses API streaming event
+            match serde_json::from_str::<Value>(data) {
+                Ok(event) => {
+                    let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
+                    debug!("📡 SSE event: {}", event_type);
                     
                     match event_type {
+                        // Handle text delta - this is the main content event
                         "response.output_text.delta" => {
                             if let Some(delta) = event.get("delta").and_then(|d| d.as_str()) {
+                                // If role hasn't been sent yet, send it with the first content
+                                let need_role = !role_sent.swap(true, std::sync::atomic::Ordering::SeqCst);
+                                
+                                debug!("📡 Text delta: {} chars, need_role={}", delta.len(), need_role);
                                 return Some(Ok(OpenAIStreamResponse {
-                                    id: event.get("response_id").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+                                    id: event.get("item_id").and_then(|i| i.as_str()).unwrap_or("").to_string(),
                                     object: "chat.completion.chunk".to_string(),
                                     created: 0,
                                     model: String::new(),
@@ -624,7 +675,7 @@ impl ModelHubProvider {
                                     choices: vec![OpenAIStreamChoice {
                                         index: 0,
                                         delta: OpenAIStreamDelta {
-                                            role: None,
+                                            role: if need_role { Some("assistant".to_string()) } else { None },
                                             content: Some(delta.to_string()),
                                             tool_calls: None,
                                         },
@@ -634,9 +685,116 @@ impl ModelHubProvider {
                                 }));
                             }
                         },
-                        "response.completed" | "response.done" => {
+                        // Handle function call output item added - this starts a tool call
+                        "response.output_item.added" => {
+                            // Check if this is a function_call type item
+                            if let Some(item) = event.get("item") {
+                                let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                if item_type == "function_call" {
+                                    let call_id = item.get("call_id").and_then(|c| c.as_str()).unwrap_or("");
+                                    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                    
+                                    // If role hasn't been sent yet, send it with the tool call
+                                    let need_role = !role_sent.swap(true, std::sync::atomic::Ordering::SeqCst);
+                                    
+                                    debug!("📡 Function call start: name={}, call_id={}, need_role={}", name, call_id, need_role);
+                                    return Some(Ok(OpenAIStreamResponse {
+                                        id: String::new(),
+                                        object: "chat.completion.chunk".to_string(),
+                                        created: 0,
+                                        model: String::new(),
+                                        system_fingerprint: None,
+                                        choices: vec![OpenAIStreamChoice {
+                                            index: 0,
+                                            delta: OpenAIStreamDelta {
+                                                role: if need_role { Some("assistant".to_string()) } else { None },
+                                                content: None,
+                                                tool_calls: Some(vec![OpenAIToolCall {
+                                                    id: Some(call_id.to_string()),
+                                                    tool_type: Some("function".to_string()),
+                                                    function: OpenAIFunctionCall {
+                                                        name: Some(name.to_string()),
+                                                        arguments: Some(String::new()),
+                                                    },
+                                                    signature: None,
+                                                    extra_content: None,
+                                                }]),
+                                            },
+                                            logprobs: None,
+                                            finish_reason: None,
+                                        }],
+                                    }));
+                                }
+                            }
+                        },
+                        // Handle function call arguments delta
+                        "response.function_call_arguments.delta" => {
+                            if let Some(delta) = event.get("delta").and_then(|d| d.as_str()) {
+                                debug!("📡 Function args delta: {} chars", delta.len());
+                                return Some(Ok(OpenAIStreamResponse {
+                                    id: String::new(),
+                                    object: "chat.completion.chunk".to_string(),
+                                    created: 0,
+                                    model: String::new(),
+                                    system_fingerprint: None,
+                                    choices: vec![OpenAIStreamChoice {
+                                        index: 0,
+                                        delta: OpenAIStreamDelta {
+                                            role: None,
+                                            content: None,
+                                            tool_calls: Some(vec![OpenAIToolCall {
+                                                id: None,
+                                                tool_type: None,
+                                                function: OpenAIFunctionCall {
+                                                    name: None,
+                                                    arguments: Some(delta.to_string()),
+                                                },
+                                                signature: None,
+                                                extra_content: None,
+                                            }]),
+                                        },
+                                        logprobs: None,
+                                        finish_reason: None,
+                                    }],
+                                }));
+                            }
+                        },
+                        // Handle function call arguments done - send tool_calls finish
+                        "response.function_call_arguments.done" => {
+                            debug!("📡 Function call done, sending tool_calls finish");
+                            // Include an empty tool_call to signal the converter that there's a tool block to close
                             return Some(Ok(OpenAIStreamResponse {
-                                id: event.get("response").and_then(|r| r.get("id")).and_then(|i| i.as_str()).unwrap_or("").to_string(),
+                                id: String::new(),
+                                object: "chat.completion.chunk".to_string(),
+                                created: 0,
+                                model: String::new(),
+                                system_fingerprint: None,
+                                choices: vec![OpenAIStreamChoice {
+                                    index: 0,
+                                    delta: OpenAIStreamDelta {
+                                        role: None,
+                                        content: None,
+                                        tool_calls: Some(vec![OpenAIToolCall {
+                                            id: None,
+                                            tool_type: None,
+                                            function: OpenAIFunctionCall {
+                                                name: None,
+                                                arguments: None,
+                                            },
+                                            signature: None,
+                                            extra_content: None,
+                                        }]),
+                                    },
+                                    logprobs: None,
+                                    finish_reason: Some("tool_calls".to_string()),
+                                }],
+                            }));
+                        },
+                        // Handle text completion events
+                        "response.output_text.done" => {
+                            debug!("📡 Text output done, sending stop");
+                            return Some(Ok(OpenAIStreamResponse {
+                                id: String::new(),
                                 object: "chat.completion.chunk".to_string(),
                                 created: 0,
                                 model: String::new(),
@@ -653,10 +811,16 @@ impl ModelHubProvider {
                                 }],
                             }));
                         },
+                        "response.completed" | "response.done" => {
+                            debug!("📡 Stream completed event");
+                        },
                         _ => {
-                            // Skip other event types (reasoning, etc.)
+                            // Skip other event types silently
                         }
                     }
+                },
+                Err(_) => {
+                    // JSON parsing failed - likely truncated data, skip silently
                 }
             }
         }
@@ -693,8 +857,15 @@ impl ModelHubProvider {
             (None, None) => Some(8192), // Default fallback
         };
         
-        if request.temperature.is_none() {
-            request.temperature = model_config.temperature;
+        // Only set temperature if the model supports it
+        // Reasoning models (o1, o3, etc.) don't support temperature
+        if model_config.options.supports_temperature {
+            if request.temperature.is_none() {
+                request.temperature = model_config.temperature;
+            }
+        } else {
+            debug!("📊 Model {} does not support temperature, skipping parameter", model_config.name);
+            request.temperature = None;
         }
         
         debug!("📊 max_tokens: original={:?}, config={:?}, final={:?}",
@@ -805,8 +976,15 @@ impl ModelHubProvider {
             (None, None) => Some(8192), // Default fallback
         };
         
-        if request.temperature.is_none() {
-            request.temperature = model_config.temperature;
+        // Only set temperature if the model supports it
+        // Reasoning models (o1, o3, etc.) don't support temperature
+        if model_config.options.supports_temperature {
+            if request.temperature.is_none() {
+                request.temperature = model_config.temperature;
+            }
+        } else {
+            debug!("📊 Model {} does not support temperature, skipping parameter", model_config.name);
+            request.temperature = None;
         }
         
         debug!("📊 max_tokens: original={:?}, config={:?}, final={:?}",
@@ -1326,6 +1504,24 @@ pub struct GeminiUsageMetadata {
 // ====================
 // Helper Functions
 // ====================
+
+/// Decode UTF-8 bytes, returning valid string and any incomplete trailing bytes
+/// This handles the case where a chunk boundary cuts through a multi-byte UTF-8 character
+fn decode_utf8_lossy_with_remainder(bytes: &[u8]) -> (String, Vec<u8>) {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => (s.to_string(), Vec::new()),
+        Err(e) => {
+            let valid_up_to = e.valid_up_to();
+            // Get the valid portion
+            let valid_str = std::str::from_utf8(&bytes[..valid_up_to])
+                .unwrap_or("")
+                .to_string();
+            // Keep the incomplete bytes for the next iteration
+            let remainder = bytes[valid_up_to..].to_vec();
+            (valid_str, remainder)
+        }
+    }
+}
 
 /// Parse a data URL into mime type and base64 data
 fn parse_data_url(url: &str) -> Option<(String, String)> {

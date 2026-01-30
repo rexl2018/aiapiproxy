@@ -88,6 +88,7 @@ Client (Claude API format response)
 - ModelHub `responses` mode uses `/responses` endpoint with Responses API format
 - ModelHub `gemini` mode uses `/v2/crawl` endpoint with OpenAI chat format
 - Ark provider uses `/responses` endpoint with Bearer token authentication (env var: `ARK_API_KEY`)
+- For reasoning models (o1, o3, etc.) that don't support temperature, set `"supportsTemperature": false` in model options
 
 🤖 Generated with [Claude Code](https://claude.ai/code)
 Co-Authored-By: Claude <noreply@anthropic.com>
